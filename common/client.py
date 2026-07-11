@@ -10,6 +10,17 @@ from __future__ import annotations
 import os
 from google import genai
 
+# Auto-load the API key from a .env if present, so every entrypoint works
+# without manually `source`-ing it. No-op if python-dotenv isn't installed.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # cwd/.env
+    for _p in ("/home/colligo/.env", os.path.expanduser("~/.env")):
+        if os.path.exists(_p):
+            load_dotenv(_p)
+except ImportError:
+    pass
+
 # --- Model IDs (override with env if the provisioned account differs) --------
 MODEL_TEXT = os.environ.get("CK_MODEL_TEXT", "gemini-3.5-flash")
 MODEL_IMAGE = os.environ.get("CK_MODEL_IMAGE", "gemini-3.1-flash-lite-image")

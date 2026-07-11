@@ -1,0 +1,47 @@
+[
+  {
+    "beat_id": 0,
+    "keyframe_png": "beat0_keyframe.png",
+    "anchor_pngs": [
+      "beat0_anchor0.png",
+      "beat0_anchor1.png"
+    ],
+    "anchor_names": [
+      "lion",
+      "mouse"
+    ],
+    "motion_text": "The lion sleeps in the sun. Wide establishing shot. [0-5s] slow push-in as the mouse scurries near.",
+    "duration_s": 5.0,
+    "narration": "Once, a mighty lion lay sleeping in the warm afternoon sun."
+  },
+  {
+    "beat_id": 1,
+    "keyframe_png": "beat1_keyframe.png",
+    "anchor_pngs": [
+      "beat1_anchor0.png",
+      "beat1_anchor1.png"
+    ],
+    "anchor_names": [
+      "lion",
+      "mouse"
+    ],
+    "motion_text": "The lion catches the mouse under its paw; the mouse pleads. Medium shot. [0-4s] the lion's paw lifts.",
+    "duration_s": 4.0,
+    "narration": "A tiny mouse ran across his paw, and the lion awoke with a roar."
+  },
+  {
+    "beat_id": 2,
+    "keyframe_png": "beat2_keyframe.png",
+    "anchor_pngs": [
+      "beat2_anchor0.png",
+      "beat2_anchor1.png"
+    ],
+    "anchor_names": [
+      "lion",
+      "mouse"
+    ],
+    "motion_text": "The mouse gnaws ropes of a hunter's net, freeing the lion. Close then wide. [0-6s] ropes snap.",
+    "duration_s": 6.0,
+    "narration": "Later, the little mouse gnawed the hunter's ropes and set the great lion free."
+  }
+]

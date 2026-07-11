@@ -3,15 +3,20 @@
 Owner: Person 2. This is the whole video/ half. It reads ONLY the seam object
 (SelectedFrame via common.io.load_selected) — never imports story/ code.
 
+DEFAULT: Omni native audio (no TTS). Pass --narrate to add TTS narration
+(fallback if Omni audio is poor); --mix to layer TTS over Omni's audio.
+
 Build against fixtures/selected.json from minute one; swap to story/'s real
 output at integration.
 
     python -m video.run_video --selected fixtures/selected.json --out out/run1
+    python -m video.run_video --selected fixtures/selected.json --narrate
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 
 from common.io import load_selected
@@ -20,25 +25,38 @@ from video.narrate import narrate
 from video.stitch import build_final
 
 
-def run(selected_json: str, out_dir: str = "out/video"):
+def run(selected_json: str, out_dir: str = "out/video",
+        do_narrate: bool = False, mix: bool = False):
     os.makedirs(out_dir, exist_ok=True)
     frames = load_selected(selected_json)
-    print(f"[1/3] Synth {len(frames)} beats (Omni, store=True)...")
+
+    print(f"[1/3] Synth {len(frames)} beats (Omni image_to_video, store=True)...")
     beat_clips = synth_all(frames, out_dir)
 
-    print("[2/3] Narrate...")
-    by_id = {fr.beat_id: fr for fr in frames}
-    for bc in beat_clips:
-        wav = os.path.join(out_dir, f"beat{bc.beat_id}.wav")
-        narrate(by_id[bc.beat_id].narration, wav)
-        bc.wav_path = wav
+    if do_narrate:
+        print("[2/3] Narrate (TTS)...")
+        by_id = {fr.beat_id: fr for fr in frames}
+        for bc in beat_clips:
+            wav = os.path.join(out_dir, f"beat{bc.beat_id}.wav")
+            narrate(by_id[bc.beat_id].narration, wav)
+            bc.wav_path = wav
+    else:
+        print("[2/3] Skipping TTS — using Omni native audio.")
 
-    print("[3/3] Reconcile + stitch...")
-    final = build_final(beat_clips, os.path.join(out_dir, "chitrakatha.mp4"))
+    print("[3/3] Stitch...")
+    final = build_final(beat_clips, os.path.join(out_dir, "chitrakatha.mp4"),
+                        narrate=do_narrate, keep_native=mix)
+
+    # Persist interaction ids — Stage-4 re-direction + demo need them
+    # (free-tier interactions expire in ~1 day).
+    ids = {str(bc.beat_id): bc.omni_interaction_id for bc in beat_clips}
+    with open(os.path.join(out_dir, "interactions.json"), "w") as f:
+        json.dump(ids, f, indent=2)
+
     print(f"\nDONE -> {final}")
-    print("Omni interaction ids (for live re-direction):")
-    for bc in beat_clips:
-        print(f"  beat {bc.beat_id}: {bc.omni_interaction_id}")
+    print(f"Omni interaction ids -> {os.path.join(out_dir, 'interactions.json')}")
+    for bid, iid in ids.items():
+        print(f"  beat {bid}: {iid}")
     return final
 
 
@@ -46,5 +64,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--selected", default="fixtures/selected.json")
     ap.add_argument("--out", default="out/video")
+    ap.add_argument("--narrate", action="store_true", help="add TTS narration (fallback path)")
+    ap.add_argument("--mix", action="store_true", help="with --narrate, layer TTS over Omni audio")
     args = ap.parse_args()
-    run(args.selected, args.out)
+    run(args.selected, args.out, do_narrate=args.narrate, mix=args.mix)

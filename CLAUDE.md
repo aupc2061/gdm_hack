@@ -58,34 +58,42 @@ Treat `common/` as a contract signed by both teams. Read it; don't rewrite it.
 
 ---
 
-## 3. VERIFIED vs UNVERIFIED API shapes (don't "fix" the verified ones)
+## 3. VERIFIED API shapes (empirically confirmed 2026-07-10 — don't "fix" them)
 
-Shapes were checked against the official cookbook notebooks on 2026-07-10.
-`api_ref.md` marks each ✅ (cookbook-proven) or ⚠️ (web-doc-only, smoke-test first).
+All shapes below were run against the LIVE API (see `out/probe/`). Full detail +
+call shapes are in `api_ref.md`. Do NOT rewrite these to match your training data.
 
-**✅ Trust these — do NOT rewrite them to match your training data:**
-- TTS uses `config=types.GenerateContentConfig(response_modalities=["AUDIO"],
-  speech_config=types.SpeechConfig(...))`. NOT `response_format={"type":"audio"}`.
-- Image gen uses `response_modalities=["image"]` + `generation_config=
-  {"image_config":{"aspect_ratio":...}}`. NOT `response_format={"type":"image"}`.
-- Omni bare-image → auto start frame; `store=True` REQUIRED for re-direction.
-- Everything runs through `client.interactions.create(...)`, not `generate_content`
-  (except the Director structured-output fallback — see below).
+**✅ Confirmed working:**
+- **Image gen (NB2):** `response_modalities=["image"]` + `generation_config=
+  {"image_config":{"aspect_ratio":...}}` via `client.interactions.create`. Bytes at
+  `it.output_image.data` (base64 str).
+- **Director structured output:** `response_format={"type":"text","mime_type":
+  "application/json","schema": Model.model_json_schema()}` via `interactions.create`
+  — works, returns JSON in `.output_text`.
+- **Omni image_to_video:** ONE image + text via `interactions.create`,
+  `generation_config={"video_config":{"task":"image_to_video"}}`, `store=True`.
+  Bytes at `it.output_video.data` (base64 str). ~36s latency, ~5–10s clip.
+- **Re-direction:** `interactions.create(previous_interaction_id=<stored id>,
+  input="...")` — works (needs the prior call's `store=True`).
+- **TTS:** `client.models.generate_content(model=<tts>, contents=text,
+  config=types.GenerateContentConfig(response_modalities=["AUDIO"],
+  speech_config=...))`. NOT `interactions.create`. Bytes at
+  `response.candidates[0].content.parts[0].inline_data.data`.
 
-**⚠️ Smoke-test on hackathon day BEFORE building on them:**
-- **Combined `FIRST_FRAME`+`IMAGE_REF_N` in one Omni call** (`video/synth.py`,
-  `USE_COMBINED=True`) — web-doc-only, no cookbook example. Run
-  `python -m video.synth` smoke_test first; if refs don't bind, set
-  `USE_COMBINED=False` (proven keyframe-only fallback).
-- **Director structured output via `response_format`** (`story/director.py`) —
-  if it errors, use `direct_story_fallback` (old `generate_content` form, proven).
+**❌ Confirmed NOT to work (don't reintroduce):**
+- **Combined `FIRST_FRAME`+`IMAGE_REF_N` in one Omni call** — API rejects it:
+  *"Image-to-video does not support more than 1 image."* We use keyframe-only.
+  There is NO `USE_COMBINED` flag anymore.
 
-**Three hard constraints baked into the design (don't design around them):**
-1. **No frame interpolation** — Omni animates forward from one keyframe. (Veo does interpolation, not Omni.)
-2. **No duration control** — `duration_s` is a pacing HINT. Clip length is whatever
-   Omni returns. Narration↔video length is reconciled in `video/stitch.reconcile`
-   (freeze-pad, NEVER truncate narration, NEVER time-stretch video).
-3. **`store=True`** on every Omni clip (free-tier interactions expire in 1 day).
+**Four hard constraints baked into the design (don't design around them):**
+1. **image_to_video takes ONE image** — consistency comes from the (anchor-conditioned)
+   keyframe; describe extra characters/props in the text prompt, not as images.
+2. **Omni generates its OWN audio** — demo default uses it. TTS (`video/narrate.py`)
+   is a FALLBACK, mixed/replaced via `video/stitch.py` only if native audio is poor.
+3. **No duration control** — `duration_s` is a pacing HINT; clip length is whatever
+   Omni returns (~5–10s). If mixing TTS, `stitch.reconcile` freeze-pads video and
+   silence-pads audio to `max` (never truncates narration).
+4. **`store=True`** on every Omni clip (free-tier interactions expire in ~1 day).
 
 ---
 
@@ -103,11 +111,12 @@ python -m story.run_story --story "The Lion and the Mouse" --out out/run1
 ```bash
 python -m fixtures.make_fixture                 # writes fixtures/selected.json (offline stub)
 python -m video.run_video --selected fixtures/selected.json --out out/vtest
+# default = Omni native audio. Add --narrate for TTS fallback, --mix to layer TTS over Omni.
 ```
 
 `fixtures/make_fixture.py` writes a valid `selected.json` with placeholder PNGs so
-`video/` is fully exercisable (io + stitch logic) without the API key or story/'s
-output. Only the live API calls inside synth/narrate need a key.
+`video/`'s io + stitch logic is exercisable without story/'s output. The live API
+calls inside synth/narrate need a key (auto-loaded from `.env` by `common/client.py`).
 
 **Integration (together, at the dry run — build `orchestrate.py` logic then):**
 ```bash

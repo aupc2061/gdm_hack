@@ -1,9 +1,12 @@
 """TTS narration: narration text -> wav.
 
-Owner: Person 2. Cookbook-confirmed shape (Get_started_TTS): config with
-response_modalities=["AUDIO"] + typed SpeechConfig. Audio bytes live in
-interaction.steps[].content[].inline_data. Language auto-detected from text
-(so a Hindi narration line would just work — future multi-language).
+Owner: Person 2.
+
+VERIFIED 2026-07-10 (out/probe): TTS uses client.models.generate_content, NOT
+interactions.create. The interactions form is rejected. Audio PCM bytes are at
+    response.candidates[0].content.parts[0].inline_data.data
+(24kHz, mono, 16-bit). Language is auto-detected from the text (a Hindi line
+would just work — future multi-language).
 """
 
 from __future__ import annotations
@@ -27,12 +30,13 @@ def _wave_file(path: str, ch: int = 1, rate: int = 24000, sw: int = 2):
         yield wf
 
 
-def _extract_pcm(interaction) -> bytes | None:
-    for step in interaction.steps:
-        if step.type == "model_output":
-            for c in step.content:
-                if getattr(c, "inline_data", None):
-                    return c.inline_data.data
+def _extract_pcm(response) -> bytes | None:
+    for cand in getattr(response, "candidates", None) or []:
+        content = getattr(cand, "content", None)
+        for part in (getattr(content, "parts", None) or []):
+            inline = getattr(part, "inline_data", None)
+            if inline and getattr(inline, "data", None):
+                return inline.data
     return None
 
 
@@ -40,9 +44,9 @@ def narrate(text: str, out_path: str, voice: str = VOICE) -> str:
     """Generate narration wav. Returns out_path."""
     client = get_client()
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    it = client.interactions.create(
+    response = client.models.generate_content(
         model=MODEL_TTS,
-        input=text,
+        contents=text,
         config=types.GenerateContentConfig(
             response_modalities=["AUDIO"],
             speech_config=types.SpeechConfig(
@@ -50,9 +54,9 @@ def narrate(text: str, out_path: str, voice: str = VOICE) -> str:
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice))),
         ),
     )
-    pcm = _extract_pcm(it)
+    pcm = _extract_pcm(response)
     if pcm is None:
-        raise RuntimeError("No audio returned from TTS interaction")
+        raise RuntimeError("No audio returned from TTS response")
     with _wave_file(out_path) as wf:
         wf.writeframes(pcm)
     return out_path

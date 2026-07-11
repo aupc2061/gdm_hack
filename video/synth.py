@@ -1,17 +1,23 @@
 """Omni Flash synthesis: SelectedFrame -> per-beat video clip.
 
-Owner: Person 2 (you). The riskiest module.
+Owner: Person 2 (you).
 
-TWO paths:
-  PRIMARY  (combined FIRST_FRAME + IMAGE_REF_N in one call) — web-doc-only, NO
-           cookbook example. MUST pass smoke_test() on the provisioned account
-           before you trust it.
-  FALLBACK (plain image_to_video: keyframe + motion text) — cookbook-proven
-           (Get_started_Omni code 28). The keyframe already carries the
-           anchor-consistent character, so refs are redundant for consistency.
+VERIFIED 2026-07-10 (out/probe): Omni image-to-video accepts EXACTLY ONE image
+input. The combined FIRST_FRAME + IMAGE_REF_N call is REJECTED by the API:
+    BadRequestError: Image-to-video does not support more than 1 image.
+So we use the single-keyframe path only. The keyframe is already anchor-
+conditioned from NB2 generation, so character consistency is preserved; any
+extra prop/character guidance goes in motion_text, not as extra images.
 
-CRITICAL: store=True on every call — required for redirect.py to work.
-Duration is NOT controllable; [0-Xs] only choreographs content, not length.
+AUDIO: Omni generates its OWN audio track natively (verified — ambient/SFX,
+possibly music/voice). We rely on that by default for the demo (showcasing
+Omni's multimodality at a GDM hackathon). We do NOT suppress it in the prompt.
+Optional TTS narration (video/narrate.py) is a FALLBACK we can mix on top only
+if Omni's native audio is poor — see stitch.build_final(narration=...).
+
+CRITICAL: store=True on every call — required for redirect.py.
+Duration is NOT controllable; [0-Xs] only choreographs content within the clip.
+Observed: image_to_video ~36s wall-clock, ~5-10s output clip WITH audio.
 """
 
 from __future__ import annotations
@@ -23,10 +29,9 @@ from typing import List
 from common.client import get_client, MODEL_VIDEO
 from common.schema import SelectedFrame, BeatClip
 
-# Toggle after smoke_test(). If the combined call binds refs correctly -> True.
-USE_COMBINED = True
-
-SHOT_RULES = "Single continuous shot, no scene cuts. No dialogue or voiceover. No text overlay."
+# We keep only the framing rule (single continuous shot). We deliberately do NOT
+# add "no dialogue/voiceover" — we want Omni's native audio for the demo.
+SHOT_RULES = "Single continuous shot, no scene cuts. No text overlay."
 
 
 def _save_video(interaction, path: str) -> None:
@@ -38,40 +43,26 @@ def _save_video(interaction, path: str) -> None:
         f.write(data)
 
 
-def _combined_prompt(fr: SelectedFrame) -> str:
-    """Build the [# Sources ...][# References ...] tagged prompt.
-
-    Image1 = keyframe (FIRST_FRAME); Image2.. = anchors (IMAGE_REF_0..).
-    """
-    ref_tags = " ".join(f"<IMAGE_REF_{i}>@Image{i + 2}" for i in range(len(fr.anchor_b64s)))
-    names = fr.anchor_names or [f"subject {i}" for i in range(len(fr.anchor_b64s))]
-    subj_desc = "; ".join(f"<IMAGE_REF_{i}> is the {names[i]}" for i in range(len(names)))
-    return (
-        f"[# Sources <FIRST_FRAME>@Image1] [# References {ref_tags}] "
-        f"{subj_desc}. {fr.motion_text}. "
-        f"Use Image1 as the exact starting frame. {SHOT_RULES}"
-    )
+def _motion_prompt(fr: SelectedFrame) -> str:
+    """Build the text prompt. Anchors are described in words (they can't be
+    passed as extra images), then the framing rule is appended."""
+    who = ""
+    if fr.anchor_names:
+        who = "Featuring the " + ", ".join(fr.anchor_names) + ". "
+    return f"{who}{fr.motion_text}. {SHOT_RULES}"
 
 
 def synth_beat(fr: SelectedFrame, out_dir: str) -> BeatClip:
-    """Generate one beat's video clip. store=True. Returns BeatClip with interaction id."""
+    """Generate one beat's video from its keyframe. store=True. Returns BeatClip."""
     client = get_client()
     os.makedirs(out_dir, exist_ok=True)
 
-    if USE_COMBINED and fr.anchor_b64s:
-        parts = [{"type": "image", "data": fr.selected_keyframe_b64, "mime_type": "image/png"}]
-        for ab in fr.anchor_b64s:
-            parts.append({"type": "image", "data": ab, "mime_type": "image/png"})
-        parts.append({"type": "text", "text": _combined_prompt(fr)})
-    else:
-        parts = [
-            {"type": "image", "data": fr.selected_keyframe_b64, "mime_type": "image/png"},
-            {"type": "text", "text": f"{fr.motion_text}. {SHOT_RULES}"},
-        ]
-
     it = client.interactions.create(
         model=MODEL_VIDEO,
-        input=parts,
+        input=[
+            {"type": "image", "data": fr.selected_keyframe_b64, "mime_type": "image/png"},
+            {"type": "text", "text": _motion_prompt(fr)},
+        ],
         generation_config={"video_config": {"task": "image_to_video"}},
         store=True,  # REQUIRED for re-direction
         response_format={"type": "video", "aspect_ratio": "16:9"},
@@ -88,17 +79,14 @@ def synth_all(frames: List[SelectedFrame], out_dir: str) -> List[BeatClip]:
 
 
 # ---------------------------------------------------------------------------
-# T+0 SMOKE TEST — run this FIRST on the provisioned account.
+# Latency / clip-length probe — run against one real keyframe.
 # ---------------------------------------------------------------------------
 
-def smoke_test(keyframe_png: str, anchor_pngs: List[str], out_dir: str = "out/smoke") -> None:
-    """Prove the combined FIRST_FRAME+IMAGE_REF call works AND measure latency+length.
+def measure(keyframe_png: str, out_dir: str = "out/smoke") -> None:
+    """Synthesize one clip and report wall-clock latency + ACTUAL clip length
+    (uncontrollable — plan the reconcile around whatever this reports).
 
-        python -m video.synth  (edit the paths at the bottom first)
-
-    Watch: does the output honor the start frame? are refs bound to the right
-    subjects? how long did it take? how long is the clip? If refs don't bind ->
-    set USE_COMBINED = False and rerun to confirm the fallback path.
+        python -m video.synth
     """
     import time
     from common.io import png_to_b64
@@ -106,25 +94,22 @@ def smoke_test(keyframe_png: str, anchor_pngs: List[str], out_dir: str = "out/sm
     fr = SelectedFrame(
         beat_id=0,
         selected_keyframe_b64=png_to_b64(keyframe_png),
-        anchor_b64s=[png_to_b64(p) for p in anchor_pngs],
-        anchor_names=["lion", "mouse"][:len(anchor_pngs)],
+        anchor_b64s=[],
+        anchor_names=["lion", "mouse"],
         motion_text="[0-5s] the lion slowly opens its eyes and lifts its head. Slow push-in.",
         duration_s=5.0,
         narration="",
     )
     t0 = time.time()
     clip = synth_beat(fr, out_dir)
-    dt = time.time() - t0
-    print(f"\nSMOKE: combined={USE_COMBINED}  elapsed={dt:.1f}s  file={clip.mp4_path}")
+    print(f"\nMEASURE: elapsed={time.time() - t0:.1f}s  file={clip.mp4_path}")
     try:
-        from moviepy.editor import VideoFileClip
-        print(f"SMOKE: actual clip length = {VideoFileClip(clip.mp4_path).duration:.2f}s "
-              f"(this is UNCONTROLLABLE — plan reconcile around it)")
+        from moviepy import VideoFileClip
+        print(f"MEASURE: actual clip length = {VideoFileClip(clip.mp4_path).duration:.2f}s "
+              f"(UNCONTROLLABLE — reconcile handles the mismatch)")
     except Exception as e:
-        print(f"SMOKE: could not read clip length ({e})")
+        print(f"MEASURE: could not read clip length ({e})")
 
 
 if __name__ == "__main__":
-    # EDIT THESE to real files on hackathon day, then: python -m video.synth
-    smoke_test("fixtures/beat0_keyframe.png",
-               ["fixtures/beat0_anchor0.png", "fixtures/beat0_anchor1.png"])
+    measure("fixtures/beat0_keyframe.png")

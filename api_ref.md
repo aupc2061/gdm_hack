@@ -181,51 +181,27 @@ def critique(candidates_b64, anchor_b64, beat):
 - Tasks: `text_to_video`, `image_to_video`, `reference_to_video`, `edit` (set via `generation_config={"video_config": {"task": ...}}`).
 - Aspect ratio via `response_format={"type": "video", "aspect_ratio": "16:9"|"9:16"}`.
 - Temporal prompting: prefix actions with time ranges like `"[0-3s] ..."`.
-- **Unsupported:** system instructions, temperature, top_p, negative prompts, multi-video prompting. Video references >3s not properly processed.
+- ❌ **`image_to_video` accepts EXACTLY ONE image** (VERIFIED 2026-07-10). Passing a keyframe + reference images in one call is rejected: `BadRequestError: Image-to-video does not support more than 1 image.` The old "combined FIRST_FRAME + IMAGE_REF_N" idea is **UNSUPPORTED** — do not use it. Character consistency comes from the keyframe itself (already anchor-conditioned by NB2); describe any extra characters/props in the *text* prompt.
+- ✅ **Omni generates its OWN audio** (VERIFIED — clips come back with a populated audio track: ambient/SFX, possibly music/voice). Our demo default relies on it. `"No dialogue or voiceover"` does NOT reliably silence it. TTS (§7) is a fallback we mix on top only if native audio is poor.
+- **Unsupported:** system instructions, temperature, top_p, negative prompts, multi-video prompting, >1 image in image_to_video. Video references >3s not properly processed.
 - For clips **>4MB** use `response_format={..., "delivery": "uri"}` then `client.files.download(file=uri)`.
-- **NO duration parameter exists.** Clip length is not controllable; `[0-Xs]` timecodes only choreograph *content within* the clip. Reconcile narration↔video length in MoviePy (audio-prioritized). ✅ confirmed.
-- **`store=True` for anything you'll re-direct** (see §0). Do NOT copy `store=False` onto editable clips. For pure throwaway clips `store=False` is a speed win, but our beats feed step-6, so keep `store=True`.
-- ✅ **A bare image is auto-treated as the start frame** (`Get_started_Omni` code 28) — plain image_to_video needs no `<FIRST_FRAME>` tag.
+- **NO duration parameter exists.** Clip length is not controllable; `[0-Xs]` timecodes only choreograph *content within* the clip. Observed ~5–10s. ✅ confirmed.
+- **`store=True` for anything you'll re-direct** (see §0). Observed latency ~36s (image_to_video), ~48s (text_to_video).
 
-**✅ Image-to-video, cookbook-proven minimal form (our FALLBACK path):**
+**✅ Image-to-video — VERIFIED WORKING, our ONLY synthesis path:**
 ```python
 def keyframe_to_video(keyframe_b64, motion_text, ar="16:9"):
     it = client.interactions.create(
         model="gemini-omni-flash-preview",
         input=[
-            {"type": "image", "data": keyframe_b64, "mime_type": "image/png"},
-            {"type": "text", "text": motion_text},   # e.g. "[0-5s] the lion wakes. Single continuous shot, no scene cuts. No dialogue or voiceover. No text overlay."
+            {"type": "image", "data": keyframe_b64, "mime_type": "image/png"},  # exactly ONE image
+            {"type": "text", "text": motion_text},   # e.g. "[0-5s] the lion wakes. Single continuous shot, no scene cuts."
         ],
         generation_config={"video_config": {"task": "image_to_video"}},
         store=True,                                  # needed for re-direction
         response_format={"type": "video", "aspect_ratio": ar},
     )
-    return it   # keep the whole interaction — need .id for re-direction; video at it.output_video.data
-```
-
-**⚠️ Combined FIRST_FRAME + IMAGE_REF_N (our PRIMARY path — web-doc-only, SMOKE-TEST first):**
-No cookbook example exists for combining a start frame *and* references in one call. Syntax per the web doc:
-```python
-input=[
-    {"type":"image","data": keyframe_b64, "mime_type":"image/png"},  # Image1 = FIRST_FRAME
-    {"type":"image","data": lion_b64,     "mime_type":"image/png"},  # Image2 = IMAGE_REF_0
-    {"type":"image","data": mouse_b64,    "mime_type":"image/png"},  # Image3 = IMAGE_REF_1
-    {"type":"text","text":
-      "[# Sources <FIRST_FRAME>@Image1] [# References <IMAGE_REF_0>@Image2 <IMAGE_REF_1>@Image3] "
-      "<IMAGE_REF_0> the lion ... <IMAGE_REF_1> the mouse ... "
-      "[0-5s] slow push-in. Single continuous shot, no scene cuts. No dialogue or voiceover. No text overlay."},
-]
-# same generation_config / store / response_format as above.
-```
-If the smoke test doesn't bind refs correctly → fall back to the minimal image_to_video above (keyframe already carries the anchor-consistent character).
-
-**Multiple subject references → video:**
-```python
-input=[
-  {"type": "image", "data": char_b64, "mime_type": "image/png"},
-  {"type": "image", "data": prop_b64, "mime_type": "image/png"},
-  {"type": "text", "text": "A cat playfully batting at a ball of yarn."},
-]
+    return it   # keep the whole interaction — need .id for re-direction; video at it.output_video.data (base64 str)
 ```
 
 ---
@@ -254,7 +230,9 @@ Editing tips from docs: simple/precise edit prompts; add **"Keep everything else
 
 **Indian languages supported:** Hindi (hi), Gujarati (gu), Kannada (kn), Marathi (mr), Odia (or), Punjabi (pa), Tamil (ta), Telugu (te). **Language auto-detected from input text** — no explicit lang param needed. 30 voices (Kore, Puck, Charon, Fenrir, Leda, …).
 
-✅ **Cookbook-confirmed shape** (`Get_started_TTS`): use `config` (a `GenerateContentConfig`) with `response_modalities=["AUDIO"]` and a typed `SpeechConfig`. The earlier `response_format={"type":"audio"}` + `generation_config={"speech_config":[{"voice":...}]}` form was **wrong**. Audio bytes are in `interaction.steps[].content[].inline_data`, not reliably `output_audio.data`.
+> ⚠️ **NOTE:** TTS is a FALLBACK for us, not the default. Omni Flash generates its own audio (see §5), and for the demo we lean on that. Use TTS only if Omni's native audio is poor, mixing it over or replacing the clip's track.
+
+✅ **VERIFIED 2026-07-10:** TTS uses **`client.models.generate_content`**, NOT `interactions.create` (the interactions form is rejected). Config is a `GenerateContentConfig` with `response_modalities=["AUDIO"]` + a typed `SpeechConfig`. Audio PCM bytes (24kHz mono 16-bit) are at **`response.candidates[0].content.parts[0].inline_data.data`**.
 ```python
 import wave, contextlib
 from google.genai import types
@@ -264,9 +242,9 @@ def wave_file(fn, ch=1, rate=24000, sw=2):
     with wave.open(fn, "wb") as wf:
         wf.setnchannels(ch); wf.setsampwidth(sw); wf.setframerate(rate); yield wf
 
-it = client.interactions.create(
+response = client.models.generate_content(     # NOT interactions.create
     model="gemini-3.1-flash-tts-preview",
-    input=beat["narration"],                   # language auto-detected from text (Hindi/Tamil/etc.)
+    contents=beat["narration"],                # language auto-detected from text (Hindi/Tamil/etc.)
     config=types.GenerateContentConfig(
         response_modalities=["AUDIO"],
         speech_config=types.SpeechConfig(
@@ -275,16 +253,15 @@ it = client.interactions.create(
     ),
 )
 
-def extract_pcm(interaction):
-    for step in interaction.steps:
-        if step.type == "model_output":
-            for c in step.content:
-                if getattr(c, "inline_data", None):
-                    return c.inline_data.data
+def extract_pcm(response):
+    for cand in response.candidates:
+        for part in cand.content.parts:
+            if getattr(part, "inline_data", None):
+                return part.inline_data.data
     return None
 
 with wave_file("beat1.wav") as wf:
-    wf.writeframes(extract_pcm(it))
+    wf.writeframes(extract_pcm(response))
 ```
 Multi-speaker (≤2): use `types.MultiSpeakerVoiceConfig([types.SpeakerVoiceConfig(speaker="Joe", voice_config=...), ...])`; **speaker names must match names in the prompt text.**
 
@@ -292,24 +269,19 @@ Multi-speaker (≤2): use `types.MultiSpeakerVoiceConfig([types.SpeakerVoiceConf
 
 ## 8. STITCHING — assemble final short
 
-Cookbook (`Animated_Story_Video_Generation`) uses **MoviePy**: build per-beat clips (video + synced narration), then concatenate.
+**moviepy 2.x** (installed: 2.2.1). API differs from 1.x: `from moviepy import ...`
+(no `.editor`), and `.set_audio`/`.set_duration` → **`.with_audio`/`.with_duration`**.
 
-Our clips are real Omni **motion** (not static Ken-Burns), and Omni clip length is uncontrollable, so audio and video rarely match. **Rule: never truncate narration, never time-stretch video — freeze-pad the shorter to `max(video, audio)`.**
+**DEFAULT (Omni native audio):** Omni clips already carry their own audio, so just concatenate — no per-beat narration needed.
 ```python
-from moviepy.editor import VideoFileClip, AudioFileClip, ImageClip, concatenate_videoclips
+from moviepy import VideoFileClip, concatenate_videoclips
 
-clips = []
-for beat_mp4, beat_wav in zip(video_files, audio_files):
-    v = VideoFileClip(beat_mp4)
-    a = AudioFileClip(beat_wav)
-    dur = max(v.duration, a.duration)
-    if v.duration < dur:                       # hold last frame to fill the gap
-        pad = ImageClip(v.get_frame(v.duration - 0.04)).set_duration(dur - v.duration)
-        v = concatenate_videoclips([v, pad])
-    clips.append(v.set_audio(a).set_duration(dur))
+clips = [VideoFileClip(mp4) for mp4 in beat_mp4s]   # each keeps its native audio
 final = concatenate_videoclips(clips)
 final.write_videofile("chitrakatha.mp4", fps=24)
 ```
+
+**FALLBACK (TTS narration):** only if Omni audio is poor. Never truncate narration, never time-stretch video — freeze-pad video and silence-pad audio to `max(video, audio)`. See `video/stitch.py::reconcile` for the full helper (handles moviepy 2.x AudioArrayClip silence padding + optional mix-over-native via `CompositeAudioClip`).
 `pip install moviepy` (needs ffmpeg).
 
 ---
@@ -336,6 +308,8 @@ Their 5-stage flow closely mirrors ours — good template to crib structure from
 - **No temperature/top_p** anywhere in the new API — strip them from any copied snippet.
 - Parallelize NB2 keyframe calls with a thread pool; keep the Omni calls sequential to avoid rate limits.
 - **`store=True` on all Omni beats** — `store=False` (a common speed tip) silently kills the step-6 re-direction. Don't copy it onto editable clips.
-- **Duration is uncontrollable** — measure real clip length at T+0 and reconcile audio↔video in MoviePy (never truncate narration, never time-stretch video; freeze-pad instead).
-- **Combined FIRST_FRAME+IMAGE_REF is web-doc-only** — smoke-test on the provisioned account before building the whole synthesis step on it; fallback is minimal image_to_video.
-- **First 5 min:** `for m in client.models.list(): print(m.name)` — confirm `gemini-omni-flash-preview`, `gemini-3.1-flash-lite-image`, `gemini-3.1-flash-tts-preview`, `gemini-3.5-flash` all resolve.
+- **Duration is uncontrollable** — observed ~5–10s clips. If mixing TTS, reconcile in MoviePy (never truncate narration; freeze-pad video, silence-pad audio).
+- ❌ **image_to_video takes ONE image only** (verified). No keyframe+refs combo. Consistency lives in the keyframe; extra subjects go in the text prompt.
+- ✅ **Omni makes its own audio** (verified) — demo default uses it; TTS is fallback only.
+- ✅ **TTS = `models.generate_content`**, bytes at `candidates[0].content.parts[0].inline_data.data` (verified).
+- **First 5 min:** `python -m common.client` — confirm all 4 model IDs resolve (all did on 2026-07-10 test account).
