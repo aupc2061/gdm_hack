@@ -94,14 +94,22 @@ to `video/` — the seam does not change.
 
 | Piece | Owner | State |
 |---|---|---|
-| Anchor-conditioned keyframes (identity) | story/ | scaffolded; **conditioning not yet proven live** |
-| **Keyframe reward loop (centerpiece)** | story/ | **SPEC only — to build (this doc)** |
-| Director storyboard | story/ | scaffolded, response_format verified |
-| Omni synth (keyframe→video) | video/ | ✅ verified live (Stages 2–3) |
-| Stitch (native audio) | video/ | ✅ verified live |
-| Multi-turn re-direction | video/ | ✅ rebuilt as stateful session (Stage 4) |
+| Anchor-conditioned keyframes (identity) | story/ | ✅ proven live — same character holds across scenes |
+| **Keyframe reward loop (centerpiece)** | story/ | ✅ built + merged; strict rubric fix (was scoring all 5/5) |
+| Global harmonize (cross-beat coherence) | story/ | ✅ built; fixed to pass sibling frame as visual target |
+| Director storyboard (auto beat count) | story/ | ✅ verified live |
+| Omni synth (keyframe→video, guardrail-resilient) | video/ | ✅ verified live |
+| Stitch (native audio, moviepy 2.x) | video/ | ✅ verified live |
+| Multi-turn re-direction + element swap + thinking | video/ | ✅ all verified live |
+| **Consistency enforcement (typed primitives, Option A)** | video/ | ✅ detection verified; full fix loop wired into pipeline |
+| Full end-to-end pipeline (`orchestrate.py`) | both | ✅ one command: story→video→enforce (crow, guardrail-safe) |
 | Narration (TTS fallback) | video/ | ✅ wired, off by default (Omni has native audio) |
 
-**Biggest gap to the goal right now:** the reward loop (novelty core) is spec-only,
-and anchor consistency is unproven. Those two are what stand between us and
-"generic cookbook clone."
+**Guardrail lesson (verified):** two filters — *violence* (hunter/net/trapped) and
+*IP* (cute lion resembles copyrighted characters). Demo story must clear BOTH:
+gentle content + distinctly-Indian non-IP characters. The **Thirsty Crow** clears
+both end-to-end and is the guardrail-safe demo default in `orchestrate.py`.
+
+**Remaining polish:** the reward loop's critic now discriminates but tends to
+score ~4 (tune threshold); harmonize/enforce don't always fully converge in the
+bounded rounds (acceptable, demo-safe). 1-min submission video export still TODO.

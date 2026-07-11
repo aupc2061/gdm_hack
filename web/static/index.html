@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ChitraKatha · चित्रकथा</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,900&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="grain"></div>
+
+  <header class="masthead">
+    <div class="brand">
+      <span class="devanagari">चित्रकथा</span>
+      <h1>ChitraKatha</h1>
+    </div>
+    <p class="tagline">Narrate a folk tale — a team of agents storyboards it, earns every frame,
+      animates it, and lets you re-direct any shot by conversation.</p>
+  </header>
+
+  <!-- ACT 1 — NARRATE (live) -->
+  <section class="act" id="act1">
+    <div class="act-label"><span>Act I</span> Narrate</div>
+    <div class="narrate-box">
+      <textarea id="story-input" rows="3"
+        placeholder="Tell a folk tale in your own words…"></textarea>
+      <div class="story-chips" id="story-chips"></div>
+      <button id="direct-btn">Direct it →</button>
+    </div>
+
+    <div class="stage-tracker" id="stage-tracker" hidden>
+      <!-- stage pills injected -->
+    </div>
+
+    <div class="storyboard" id="storyboard"><!-- beat cards injected --></div>
+  </section>
+
+  <!-- ACT 2 — ANIMATE (pre-baked) -->
+  <section class="act" id="act2" hidden>
+    <div class="act-label"><span>Act II</span> Animate</div>
+    <p class="act-note">The storyboard becomes a film — NB2 keyframes animated through Omni Flash,
+      stitched into one short. <em>(video pre-rendered; keyframes above were earned live)</em></p>
+    <div class="film-frame">
+      <video id="film" controls playsinline></video>
+    </div>
+  </section>
+
+  <!-- ACT 3 — RE-DIRECT (live edit) -->
+  <section class="act" id="act3" hidden>
+    <div class="act-label"><span>Act III</span> Re-direct</div>
+    <p class="act-note">Direct the film by conversation. Change a moment, or swap a character —
+      the rest of the cast stays consistent.</p>
+    <div class="redirect-chips" id="redirect-chips"></div>
+    <div class="redirect-box">
+      <input id="redirect-input" type="text"
+        placeholder='e.g. "make it rainy"  or  "swap the crow for a parrot"' />
+      <button id="redirect-btn">Re-shoot →</button>
+    </div>
+    <div class="redirect-status" id="redirect-status"></div>
+    <div class="beforeafter" id="beforeafter" hidden>
+      <div class="ba-col"><h4>Before</h4><video id="ba-before" controls playsinline muted loop></video></div>
+      <div class="ba-col"><h4>After</h4><video id="ba-after" controls playsinline muted loop></video></div>
+    </div>
+    <div class="film-frame" id="restitch-frame" hidden>
+      <h4 class="restitch-label">The re-directed film</h4>
+      <video id="film-v2" controls playsinline></video>
+    </div>
+  </section>
+
+  <footer class="foot">Idea 4 · NB2 Lite → Omni Flash · storyboard-conditioned, verifier-guided, conversationally editable</footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

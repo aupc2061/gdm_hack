@@ -53,9 +53,22 @@ python -m video.synth                                 # T+0 SMOKE TEST (edit pat
 python -m video.run_video --selected fixtures/selected.json --out out/vtest
 ```
 
-**Integration (together, at the dry run):**
+**Full pipeline (one command):**
 ```bash
-python orchestrate.py --story "The Lion and the Mouse" --out out/full
+python orchestrate.py                 # guardrail-safe default (Thirsty Crow)
+python orchestrate.py --story "..." --out out/mydemo
+# story -> reward loop -> harmonize -> Omni synth -> stitch -> consistency enforce
+```
+
+**Demo frontend (storybook UI):**
+```bash
+pip install -r requirements.txt       # includes fastapi + uvicorn
+uvicorn web.server:app --host 127.0.0.1 --port 8000
+# open http://127.0.0.1:8000
+#  Act 1 Narrate  — type a folk tale, watch the agents storyboard it LIVE (SSE)
+#  Act 2 Animate  — the pre-baked stitched short plays
+#  Act 3 Re-direct— type "make it rainy" / "swap crow for parrot" — LIVE Omni edit
+# points at CK_RUN_DIR (default out/crow_video) for the pre-baked short + edit ids
 ```
 
 ## Hackathon-day order of operations (T+0)

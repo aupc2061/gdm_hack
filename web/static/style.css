@@ -1,0 +1,139 @@
+:root {
+  --ink: #2b1a0f;
+  --paper: #f6ecd6;
+  --paper-2: #efe0c0;
+  --saffron: #e8873a;
+  --saffron-deep: #c25e1e;
+  --leaf: #5c7a4a;
+  --gold: #d9a441;
+  --maroon: #7a2e1e;
+  --line: #3a2412;
+  --card: #fbf4e3;
+  --shadow: rgba(58, 36, 18, 0.22);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Inter", system-ui, sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(1200px 600px at 50% -10%, #fff6e2 0%, var(--paper) 55%, var(--paper-2) 100%);
+  min-height: 100vh;
+  line-height: 1.5;
+}
+
+/* subtle paper grain */
+.grain {
+  position: fixed; inset: 0; pointer-events: none; z-index: 1; opacity: 0.05;
+  background-image: radial-gradient(var(--line) 0.5px, transparent 0.5px);
+  background-size: 4px 4px;
+}
+
+.masthead {
+  text-align: center; padding: 48px 20px 24px; position: relative; z-index: 2;
+}
+.brand { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.devanagari { font-family: "Fraunces", serif; font-size: 2.1rem; color: var(--saffron-deep); font-weight: 600; }
+.masthead h1 {
+  font-family: "Fraunces", serif; font-weight: 900; font-size: 3.4rem; margin: 0;
+  letter-spacing: -1px; color: var(--ink);
+  text-shadow: 2px 2px 0 var(--gold);
+}
+.tagline { max-width: 640px; margin: 12px auto 0; color: #6a4a30; font-size: 1.02rem; }
+
+.act {
+  max-width: 960px; margin: 28px auto; padding: 28px 30px; position: relative; z-index: 2;
+  background: var(--card);
+  border: 2.5px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 8px 8px 0 var(--shadow);
+}
+.act-label {
+  font-family: "Fraunces", serif; font-weight: 900; font-size: 1.5rem;
+  color: var(--maroon); margin-bottom: 6px;
+}
+.act-label span {
+  display: inline-block; background: var(--saffron); color: #fff;
+  font-size: 0.72rem; letter-spacing: 1.5px; text-transform: uppercase;
+  padding: 3px 9px; border-radius: 20px; margin-right: 10px; vertical-align: middle;
+}
+.act-note { color: #6a4a30; margin: 0 0 18px; font-size: 0.95rem; }
+.act-note em { color: var(--saffron-deep); font-style: italic; }
+
+/* Act 1 — narrate */
+.narrate-box { display: flex; flex-direction: column; gap: 12px; }
+#story-input {
+  width: 100%; padding: 14px 16px; font-family: "Fraunces", serif; font-size: 1.1rem;
+  border: 2px solid var(--line); border-radius: 10px; background: #fffdf6; color: var(--ink);
+  resize: vertical;
+}
+#story-input:focus { outline: none; border-color: var(--saffron); }
+.story-chips, .redirect-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip {
+  cursor: pointer; font-size: 0.82rem; padding: 6px 12px; border-radius: 20px;
+  background: var(--paper-2); border: 1.5px solid var(--line); color: var(--ink);
+  transition: all 0.15s;
+}
+.chip:hover { background: var(--gold); }
+button {
+  align-self: flex-start; cursor: pointer; font-family: "Fraunces", serif; font-weight: 600;
+  font-size: 1.05rem; padding: 11px 26px; border-radius: 10px; color: #fff;
+  background: var(--saffron-deep); border: 2px solid var(--line);
+  box-shadow: 3px 3px 0 var(--shadow); transition: transform 0.1s;
+}
+button:hover { transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--shadow); }
+button:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--shadow); }
+button:disabled { opacity: 0.5; cursor: wait; transform: none; }
+
+/* stage tracker */
+.stage-tracker { display: flex; flex-wrap: wrap; gap: 10px; margin: 22px 0 8px; }
+.stage-pill {
+  display: flex; align-items: center; gap: 8px; font-size: 0.86rem; font-weight: 500;
+  padding: 7px 14px; border-radius: 22px; border: 1.5px solid var(--line);
+  background: var(--paper); color: #6a4a30; opacity: 0.55; transition: all 0.3s;
+}
+.stage-pill.running { opacity: 1; background: var(--gold); color: var(--ink); }
+.stage-pill.done { opacity: 1; background: var(--leaf); color: #fff; }
+.stage-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.stage-pill.running .dot { animation: pulse 0.9s infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+/* storyboard cards */
+.storyboard { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 16px; margin-top: 20px; }
+.beat-card {
+  background: #fffdf6; border: 2px solid var(--line); border-radius: 10px; overflow: hidden;
+  box-shadow: 4px 4px 0 var(--shadow); animation: pop 0.35s ease-out;
+}
+@keyframes pop { from { opacity: 0; transform: scale(0.9) translateY(8px); } to { opacity: 1; transform: none; } }
+.beat-card img { width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block; background: var(--paper-2); }
+.beat-card .cap { padding: 8px 10px; font-size: 0.8rem; color: #6a4a30; }
+.beat-card .cap b { color: var(--maroon); font-family: "Fraunces", serif; }
+.reward-chips { display: flex; gap: 4px; flex-wrap: wrap; padding: 0 10px 10px; }
+.rchip { font-size: 0.68rem; padding: 2px 7px; border-radius: 10px; font-weight: 600; }
+.rchip.earned { background: var(--leaf); color: #fff; }
+.rchip.fixed { background: var(--saffron); color: #fff; }
+.anchor-strip { display: flex; gap: 10px; margin: 8px 0 4px; }
+.anchor-strip img { width: 68px; height: 68px; border-radius: 8px; border: 2px solid var(--line); object-fit: cover; animation: pop 0.3s; }
+
+/* film */
+.film-frame { border: 3px solid var(--line); border-radius: 12px; overflow: hidden; box-shadow: 6px 6px 0 var(--shadow); background: #000; }
+.film-frame video { width: 100%; display: block; }
+.restitch-label { font-family: "Fraunces", serif; color: var(--maroon); margin: 22px 0 10px; }
+
+/* Act 3 — redirect */
+.redirect-box { display: flex; gap: 10px; margin: 12px 0; }
+#redirect-input { flex: 1; padding: 12px 15px; font-size: 1rem; border: 2px solid var(--line); border-radius: 10px; background: #fffdf6; color: var(--ink); }
+#redirect-input:focus { outline: none; border-color: var(--saffron); }
+.redirect-status { min-height: 22px; font-size: 0.9rem; color: var(--saffron-deep); font-weight: 500; }
+.beforeafter { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
+.ba-col h4 { font-family: "Fraunces", serif; color: var(--maroon); margin: 0 0 8px; }
+.ba-col video { width: 100%; border: 2px solid var(--line); border-radius: 10px; background: #000; }
+
+.foot { text-align: center; color: #8a6a4a; font-size: 0.82rem; padding: 30px 20px 50px; position: relative; z-index: 2; }
+
+@media (max-width: 640px) {
+  .masthead h1 { font-size: 2.4rem; }
+  .beforeafter { grid-template-columns: 1fr; }
+}

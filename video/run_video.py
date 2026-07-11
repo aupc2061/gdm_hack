@@ -26,7 +26,8 @@ from video.stitch import build_final
 
 
 def run(selected_json: str, out_dir: str = "out/video",
-        do_narrate: bool = False, mix: bool = False, think: bool = False):
+        do_narrate: bool = False, mix: bool = False, think: bool = False,
+        enforce: bool = False):
     os.makedirs(out_dir, exist_ok=True)
     frames = load_selected(selected_json)
 
@@ -66,6 +67,16 @@ def run(selected_json: str, out_dir: str = "out/video",
     print(f"Omni interaction ids -> {os.path.join(out_dir, 'interactions.json')}")
     for bid, iid in ids.items():
         print(f"  beat {bid}: {iid}")
+
+    if enforce:
+        # Post-render consistency net: derive per-beat primitives from the story's
+        # anchors, check each rendered beat, auto re-direct violators, re-stitch.
+        print("\n[4/4] Consistency enforcement (anchor-derived primitives)...")
+        from video.consistency import enforce_run
+        report = enforce_run(out_dir, selected_json)
+        with open(os.path.join(out_dir, "consistency_report.json"), "w") as f:
+            json.dump(report, f, indent=2)
+        print(f"Consistency report -> {os.path.join(out_dir, 'consistency_report.json')}")
     return final
 
 
@@ -77,5 +88,8 @@ if __name__ == "__main__":
     ap.add_argument("--mix", action="store_true", help="with --narrate, layer TTS over Omni audio")
     ap.add_argument("--think", action="store_true",
                     help="pre-bake with Omni reasoning captured per beat (slower ~1.8x)")
+    ap.add_argument("--enforce", action="store_true",
+                    help="post-render consistency net: check beats vs anchor-derived primitives, auto re-direct")
     args = ap.parse_args()
-    run(args.selected, args.out, do_narrate=args.narrate, mix=args.mix, think=args.think)
+    run(args.selected, args.out, do_narrate=args.narrate, mix=args.mix, think=args.think,
+        enforce=args.enforce)
