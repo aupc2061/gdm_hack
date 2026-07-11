@@ -34,6 +34,14 @@ def run(selected_json: str, out_dir: str = "out/video",
     print(f"[1/3] Synth {len(frames)} beats (Omni image_to_video, store=True{tag})...")
     beat_clips = synth_all(frames, out_dir, think=think)
 
+    if not beat_clips:
+        raise RuntimeError("All beats were blocked/failed — nothing to stitch. "
+                           "Check guardrail blocks above; soften the motion text or re-run.")
+    if len(beat_clips) < len(frames):
+        got = {bc.beat_id for bc in beat_clips}
+        missing = [fr.beat_id for fr in frames if fr.beat_id not in got]
+        print(f"  NOTE: {len(beat_clips)}/{len(frames)} beats rendered; missing {missing} (guardrail-blocked).")
+
     if do_narrate:
         print("[2/3] Narrate (TTS)...")
         by_id = {fr.beat_id: fr for fr in frames}

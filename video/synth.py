@@ -24,7 +24,8 @@ from __future__ import annotations
 
 import base64
 import os
-from typing import List
+import time
+from typing import List, Optional
 
 from common.client import get_client, MODEL_VIDEO
 from common.schema import SelectedFrame, BeatClip
@@ -32,6 +33,22 @@ from common.schema import SelectedFrame, BeatClip
 # We keep only the framing rule (single continuous shot). We deliberately do NOT
 # add "no dialogue/voiceover" — we want Omni's native audio for the demo.
 SHOT_RULES = "Single continuous shot, no scene cuts. No text overlay."
+
+
+class VideoBlocked(Exception):
+    """Omni refused a beat's prompt (content guardrail) after all retries.
+
+    Guardrails are INTERMITTENT and phrasing-sensitive — a benign folk-tale beat
+    ('lion holds the trembling mouse', 'trapped in a net') can trip the filter on
+    one call and pass on the next. synth_all() catches this so ONE blocked beat
+    doesn't kill the whole render (mirrors story/keyframes.py's ImageBlocked).
+    """
+
+
+def _is_guardrail(exc: Exception) -> bool:
+    s = str(exc).lower()
+    return ("guardrail" in s or "input blocked" in s or "blocked" in s
+            or "prohibited" in s or "safety" in s)
 
 
 def _save_video(interaction, path: str) -> None:
@@ -73,12 +90,16 @@ def _motion_prompt(fr: SelectedFrame) -> str:
     return f"{who}{fr.motion_text}. {SHOT_RULES}"
 
 
-def synth_beat(fr: SelectedFrame, out_dir: str, think: bool = False) -> BeatClip:
+def synth_beat(fr: SelectedFrame, out_dir: str, think: bool = False,
+               retries: int = 2) -> BeatClip:
     """Generate one beat's video from its keyframe. store=True. Returns BeatClip.
 
     think=True enables Omni's physics/lighting reasoning (thinking_level=high),
     captures the thought text to beat<N>.thought.txt. Slower (~1.8x) — use for
     pre-baked demo clips, not live generation.
+
+    Guardrail blocks are INTERMITTENT — retry a few times; on persistent block
+    raise VideoBlocked so the caller can skip this beat rather than crash.
     """
     client = get_client()
     os.makedirs(out_dir, exist_ok=True)
@@ -87,16 +108,30 @@ def synth_beat(fr: SelectedFrame, out_dir: str, think: bool = False) -> BeatClip
     if think:
         gen_cfg.update(_THINK_CONFIG)
 
-    it = client.interactions.create(
-        model=MODEL_VIDEO,
-        input=[
-            {"type": "image", "data": fr.selected_keyframe_b64, "mime_type": "image/png"},
-            {"type": "text", "text": _motion_prompt(fr)},
-        ],
-        generation_config=gen_cfg,
-        store=True,  # REQUIRED for re-direction
-        response_format={"type": "video", "aspect_ratio": "16:9"},
-    )
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            it = client.interactions.create(
+                model=MODEL_VIDEO,
+                input=[
+                    {"type": "image", "data": fr.selected_keyframe_b64, "mime_type": "image/png"},
+                    {"type": "text", "text": _motion_prompt(fr)},
+                ],
+                generation_config=gen_cfg,
+                store=True,  # REQUIRED for re-direction
+                response_format={"type": "video", "aspect_ratio": "16:9"},
+            )
+            break
+        except Exception as e:
+            last_exc = e
+            if not _is_guardrail(e):
+                raise  # real error (auth/network) — don't mask it
+            if attempt < retries:
+                print(f"  beat {fr.beat_id}: guardrail block, retrying ({attempt + 1}/{retries})...")
+                time.sleep(2)
+    else:
+        raise VideoBlocked(f"beat {fr.beat_id} blocked after {retries + 1} attempts: {str(last_exc)[:120]}")
+
     mp4 = os.path.join(out_dir, f"beat{fr.beat_id}.mp4")
     _save_video(it, mp4)
 
@@ -112,9 +147,19 @@ def synth_beat(fr: SelectedFrame, out_dir: str, think: bool = False) -> BeatClip
 
 
 def synth_all(frames: List[SelectedFrame], out_dir: str, think: bool = False) -> List[BeatClip]:
-    """Sequential (avoid Omni rate limits). Returns BeatClips in beat order."""
-    return [synth_beat(fr, out_dir, think=think)
-            for fr in sorted(frames, key=lambda f: f.beat_id)]
+    """Sequential (avoid Omni rate limits). Returns BeatClips in beat order.
+
+    A beat blocked by guardrails after retries is SKIPPED (logged), not fatal —
+    one bad beat must not sink the whole render. Mirrors story/keyframes.py.
+    Returns only the beats that succeeded (may be fewer than len(frames)).
+    """
+    clips = []
+    for fr in sorted(frames, key=lambda f: f.beat_id):
+        try:
+            clips.append(synth_beat(fr, out_dir, think=think))
+        except VideoBlocked as e:
+            print(f"  !! {e} -> SKIPPING beat {fr.beat_id} (stitch will omit it)")
+    return clips
 
 
 # ---------------------------------------------------------------------------
