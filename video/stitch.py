@@ -31,7 +31,9 @@ def build_native(beat_clips: List[BeatClip], out_path: str = "out/chitrakatha.mp
     clips = [VideoFileClip(bc.mp4_path)
              for bc in sorted(beat_clips, key=lambda b: b.beat_id)]
     final = concatenate_videoclips(clips)
-    final.write_videofile(out_path, fps=24)
+    # audio_codec="aac" is REQUIRED for browser playback — moviepy defaults to
+    # MP3-in-MP4, which browsers play silently (video only, no sound).
+    final.write_videofile(out_path, fps=24, audio_codec="aac")
     for c in clips:
         c.close()
     final.close()
@@ -92,7 +94,9 @@ def build_final(beat_clips: List[BeatClip], out_path: str = "out/chitrakatha.mp4
             raise ValueError(f"beat {bc.beat_id} has no narration wav — set BeatClip.wav_path first")
         clips.append(reconcile(bc.mp4_path, bc.wav_path, keep_native=keep_native))
     final = concatenate_videoclips(clips)
-    final.write_videofile(out_path, fps=24)
+    # audio_codec="aac" is REQUIRED for browser playback — moviepy defaults to
+    # MP3-in-MP4, which browsers play silently (video only, no sound).
+    final.write_videofile(out_path, fps=24, audio_codec="aac")
     for c in clips:
         c.close()
     final.close()

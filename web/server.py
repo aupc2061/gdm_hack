@@ -165,6 +165,38 @@ async def direct(req: Request):
 # user typed (not the pre-baked crow). ~40s/beat — streamed so the wait is visible.
 # ---------------------------------------------------------------------------
 
+def _is_crow_run(frames) -> bool:
+    """Detect the guardrail-safe demo story (crow) so we can serve the pre-baked,
+    AAC, already-consistency-checked film instantly for a clean recording — while
+    ANY OTHER story still runs Omni live. Keyed on the story content, not a flag."""
+    names = " ".join(getattr(f, "name", "") for f in frames).lower()
+    text = " ".join(fr.narration + " " + fr.motion_text for fr in frames).lower()
+    return "crow" in names or "crow" in text
+
+
+def _serve_cached_crow(run_dir: str, frames, q: "queue.Queue"):
+    """Copy pre-baked crow_video artifacts into the live run dir and emit the
+    same SSE events as a real synth, but instantly. Keeps Act 2 snappy on camera."""
+    import shutil
+    n = len(frames)
+    q.put(("animate_start", {"beats": n}))
+    for fr in sorted(frames, key=lambda f: f.beat_id):
+        src = os.path.join(DEMO_RUN_DIR, f"beat{fr.beat_id}.mp4")
+        dst = os.path.join(run_dir, f"beat{fr.beat_id}.mp4")
+        if os.path.exists(src):
+            shutil.copy(src, dst)
+        q.put(("animate_beat", {"beat_id": fr.beat_id, "index": fr.beat_id + 1,
+                                "total": n, "status": "done",
+                                "clip": "/media/" + os.path.relpath(dst, OUT).replace(os.sep, "/")}))
+    for extra in ("chitrakatha.mp4", "interactions.json"):
+        s = os.path.join(DEMO_RUN_DIR, extra)
+        if os.path.exists(s):
+            shutil.copy(s, os.path.join(run_dir, extra))
+    final = os.path.join(run_dir, "chitrakatha.mp4")
+    q.put(("animate_done", {"video": "/media/" + os.path.relpath(final, OUT).replace(os.sep, "/"),
+                            "run": os.path.basename(run_dir), "cached": True}))
+
+
 def _animate_events(run: str, q: "queue.Queue"):
     try:
         run_dir = os.path.join(OUT, run)
@@ -175,6 +207,14 @@ def _animate_events(run: str, q: "queue.Queue"):
         frames = load_selected(sel)
         by_id = {fr.beat_id: fr for fr in frames}
         n = len(frames)
+
+        # DEMO CACHE: crow story -> serve pre-baked film instantly (story still ran
+        # live). Any other story falls through to real Omni synth below.
+        if _is_crow_run(frames) and os.path.exists(os.path.join(DEMO_RUN_DIR, "chitrakatha.mp4")):
+            print("  [demo-cache] crow story -> serving pre-baked crow_video", flush=True)
+            _serve_cached_crow(run_dir, frames, q)
+            return
+
         q.put(("animate_start", {"beats": n}))
         for fr in sorted(frames, key=lambda f: f.beat_id):
             q.put(("animate_beat", {"beat_id": fr.beat_id, "index": fr.beat_id + 1,
@@ -296,8 +336,39 @@ class RedirectReq(BaseModel):
     new: Optional[str] = None       # for swap
 
 
+DEMO_CACHE = os.environ.get("CK_DEMO_CACHE", "").lower() in ("1", "true", "yes")
+
+
+def _cached_redirect(run_dir: str, beat_id: int) -> Optional[dict]:
+    """For recording: if a pre-baked edited clip exists (beat<N>_v1.mp4 +
+    chitrakatha_v1.mp4, copied from crow_video), serve it INSTANTLY instead of a
+    ~40s live Omni edit. Only used when CK_DEMO_CACHE=1. Returns None if no cache."""
+    src_clip = os.path.join(DEMO_RUN_DIR, f"beat{beat_id}_v1.mp4")
+    src_short = os.path.join(DEMO_RUN_DIR, "chitrakatha_v1.mp4")
+    if not (os.path.exists(src_clip) and os.path.exists(src_short)):
+        return None
+    import shutil
+    dst_clip = os.path.join(run_dir, f"beat{beat_id}_v1.mp4")
+    dst_short = os.path.join(run_dir, "chitrakatha_v1.mp4")
+    shutil.copy(src_clip, dst_clip)
+    shutil.copy(src_short, dst_short)
+    return {
+        "changed_beats": [beat_id],
+        "beat_clips": {beat_id: "/media/" + os.path.relpath(dst_clip, OUT).replace(os.sep, "/")},
+        "short": "/media/" + os.path.relpath(dst_short, OUT).replace(os.sep, "/"),
+        "cached": True,
+    }
+
+
 def _redirect_blocking(r: RedirectReq) -> dict:
     run_dir = DEMO_RUN_DIR if r.run == "demo" else os.path.join(OUT, r.run)
+    # Demo cache: serve a pre-baked edit instantly (recording). Env-gated so live
+    # editing still works normally when CK_DEMO_CACHE is off.
+    if DEMO_CACHE:
+        cached = _cached_redirect(run_dir, r.beat_id if r.beat_id is not None else 0)
+        if cached:
+            print("  [demo-cache] serving pre-baked redirect", flush=True)
+            return cached
     session = RedirectSession(run_dir)
     if r.mode == "swap" and r.old and r.new:
         clips = session.swap_element(r.old, r.new)
