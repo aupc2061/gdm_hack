@@ -55,10 +55,14 @@ def _pad_audio_to(a: AudioFileClip, target: float):
     return AudioArrayClip(np.vstack([arr, silence]), fps=fps)
 
 
-def reconcile(mp4_path: str, wav_path: str, keep_native: bool = False):
+def reconcile(mp4_path: str, wav_path: str, keep_native: bool = False,
+              duck: float = 0.35):
     """Attach narration to a clip, freeze-padding video and silence-padding audio
-    to max(video, audio). If keep_native, mix narration OVER the clip's own audio;
-    otherwise replace it."""
+    to max(video, audio).
+
+    keep_native=True: mix narration OVER the clip's own Omni audio, with that bed
+      DUCKED to `duck` volume (0.35 = 35%) so the story narration sits clearly on
+      top of the ambient sound. keep_native=False: narration replaces the audio."""
     v = VideoFileClip(mp4_path)
     a = AudioFileClip(wav_path)
     dur = max(v.duration, a.duration)
@@ -67,7 +71,8 @@ def reconcile(mp4_path: str, wav_path: str, keep_native: bool = False):
         v = concatenate_videoclips([v, ImageClip(last, duration=dur - v.duration)])
     a = _pad_audio_to(a, dur)
     if keep_native and v.audio is not None:
-        a = CompositeAudioClip([v.audio, a])
+        bed = v.audio.with_volume_scaled(duck)   # duck Omni's ambient under narration
+        a = CompositeAudioClip([bed, a])
     return v.with_audio(a).with_duration(dur)
 
 

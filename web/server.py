@@ -28,7 +28,7 @@ from fastapi.responses import (StreamingResponse, JSONResponse, FileResponse,
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from common.io import save_selected
+from common.io import save_selected, load_selected
 from common.schema import SelectedFrame
 from story.director import direct_story
 from story.anchors import generate_anchors
@@ -36,6 +36,9 @@ from story.keyframes import fan_out
 from story.critic import reward_loop, harmonize
 from story.run_story import _relevant_anchor_items
 from video.redirect import RedirectSession
+from video.synth import synth_beat, VideoBlocked
+from video.stitch import build_native, build_final
+from video.narrate import narrate
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -142,6 +145,86 @@ async def direct(req: Request):
 
     q: "queue.Queue" = queue.Queue()
     threading.Thread(target=_story_pipeline_events, args=(story, out_dir, q), daemon=True).start()
+
+    async def stream():
+        loop = asyncio.get_event_loop()
+        while True:
+            item = await loop.run_in_executor(None, q.get)
+            if item is None:
+                break
+            event, data = item
+            yield _sse(event, data)
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ---------------------------------------------------------------------------
+# Act 2 (live) — synthesize video for the JUST-NARRATED story, per-beat progress.
+# Runs Omni synth on out/live_run/selected.json so the film matches what the
+# user typed (not the pre-baked crow). ~40s/beat — streamed so the wait is visible.
+# ---------------------------------------------------------------------------
+
+def _animate_events(run: str, q: "queue.Queue"):
+    try:
+        run_dir = os.path.join(OUT, run)
+        sel = os.path.join(run_dir, "selected.json")
+        if not os.path.exists(sel):
+            q.put(("error", {"message": f"no selected.json in {run} — narrate a story first"}))
+            return
+        frames = load_selected(sel)
+        by_id = {fr.beat_id: fr for fr in frames}
+        n = len(frames)
+        q.put(("animate_start", {"beats": n}))
+        beat_clips = []
+        for i, fr in enumerate(sorted(frames, key=lambda f: f.beat_id)):
+            q.put(("animate_beat", {"beat_id": fr.beat_id, "index": i + 1, "total": n,
+                                    "status": "running",
+                                    "label": f"Animating beat {i + 1}/{n} through Omni Flash…"}))
+            try:
+                bc = synth_beat(fr, run_dir)
+                # Narration: TTS the beat's line, mixed OVER Omni's ducked ambient bed.
+                try:
+                    wav = os.path.join(run_dir, f"beat{fr.beat_id}.wav")
+                    narrate(fr.narration, wav)
+                    bc.wav_path = wav
+                except Exception as ne:
+                    print(f"  narration failed beat {fr.beat_id}: {ne}", flush=True)
+                beat_clips.append(bc)
+                url = "/media/" + os.path.relpath(bc.mp4_path, OUT).replace(os.sep, "/")
+                q.put(("animate_beat", {"beat_id": fr.beat_id, "index": i + 1, "total": n,
+                                        "status": "done", "clip": url}))
+            except VideoBlocked as e:
+                q.put(("animate_beat", {"beat_id": fr.beat_id, "index": i + 1, "total": n,
+                                        "status": "blocked", "message": str(e)[:120]}))
+        if not beat_clips:
+            q.put(("error", {"message": "all beats blocked by guardrails"}))
+            return
+        q.put(("stage", {"stage": "stitch", "status": "running",
+                         "label": "Stitching the film + narration…"}))
+        # narrate=True + keep_native=True => TTS narration over ducked Omni bed.
+        have_narration = all(bc.wav_path for bc in beat_clips)
+        final = build_final(beat_clips, os.path.join(run_dir, "chitrakatha.mp4"),
+                            narrate=have_narration, keep_native=True)
+        ids = {str(bc.beat_id): bc.omni_interaction_id for bc in beat_clips}
+        with open(os.path.join(run_dir, "interactions.json"), "w") as f:
+            json.dump(ids, f, indent=2)
+        q.put(("animate_done", {
+            "video": "/media/" + os.path.relpath(final, OUT).replace(os.sep, "/"),
+            "run": run,
+        }))
+    except Exception as e:
+        q.put(("error", {"message": f"{type(e).__name__}: {str(e)[:200]}"}))
+    finally:
+        q.put(None)
+
+
+@app.post("/api/animate")
+async def animate(req: Request):
+    body = await req.json()
+    run = (body or {}).get("run", "live_run")
+    q: "queue.Queue" = queue.Queue()
+    threading.Thread(target=_animate_events, args=(run, q), daemon=True).start()
 
     async def stream():
         loop = asyncio.get_event_loop()
