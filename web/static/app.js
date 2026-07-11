@@ -260,18 +260,26 @@ function runRedirect(payload) {
   }).then((r) => r.json()).then((d) => {
     $("redirect-btn").disabled = false;
     if (d.error) { st.textContent = "⚠ " + d.error; return; }
-    st.textContent = `Re-shot beat(s) ${d.changed_beats.join(", ")} live.`;
+    st.textContent = d.cached
+      ? `Re-shot beat(s) ${d.changed_beats.join(", ")}.`
+      : `Re-shot beat(s) ${d.changed_beats.join(", ")} live.`;
     const firstBeat = d.changed_beats[0];
-    const afterClip = d.beat_clips[firstBeat];
+    // beat_clips keys are strings in JSON — look up by String(beat)
+    const afterClip = d.beat_clips[firstBeat] || d.beat_clips[String(firstBeat)];
     if (afterClip) {
       $("beforeafter").hidden = false;
       $("ba-before").src = beforeSrc;
       $("ba-after").src = afterClip;
+      $("ba-after").load();
     }
     if (d.short) {
       $("restitch-frame").hidden = false;
-      $("film-v2").src = d.short;
-      $("film-v2").load();
+      const v2 = $("film-v2");
+      v2.src = d.short;
+      v2.load();
+      // scroll the re-directed film into view so the result is unmissable.
+      // NOT autoplayed/muted — it's the payoff, press play for full sound.
+      $("restitch-frame").scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }).catch((e) => {
     $("redirect-btn").disabled = false;
