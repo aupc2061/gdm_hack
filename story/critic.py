@@ -1,32 +1,71 @@
-"""Critic agent: score candidates, pick best, bounded single-regen.
+"""Critic agent: verifier-guided keyframe reward loop (GOAL.md centerpiece).
 
-Owner: Person 1. The honest inference-time verifier — best-of-N, not MCTS.
+Owner: Person 1. The honest inference-time verifier — greedy search over
+targeted image edits, NOT blind best-of-N and NOT MCTS.
 
-Regen rule (HARD STOP): if BOTH candidates score < THRESHOLD on ANY axis,
-issue exactly ONE targeted regen for that beat, then pick best-of-existing.
-No further loop — caps worst case at 2x per beat.
+Reward loop (per beat), the novelty core:
+  seed = best of the fan-out candidates (one multi-candidate critique)
+  repeat up to MAX_ITERS (budget K):
+      score the frame on 5 proxy-reward axes (1-5 each)
+      if min(axes) >= THRESHOLD:  break         # earned it
+      apply ONE targeted NB2 edit to the SAME frame (not a fresh regen)
+  return the highest-total-reward frame seen (best-seen), plus the full
+  score trajectory (the live demo wow).
+
+Bounds (demo-safe): hard cap K, always keep best-seen, log every iteration.
+Output is still a keyframe b64 — the common/schema seam does not change.
 """
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from common.client import get_client, MODEL_TEXT
 from common.schema import Storyboard, Beat, Verdict
 from story.anchors import gen_image
 from story.style import style_clause
 
-THRESHOLD = 3  # regen if either candidate scores < 3/5 on any axis. Tune live.
+THRESHOLD = 4      # a frame is "earned" when every reward axis is >= this. Tune live.
+MAX_ITERS = 3      # budget K: max targeted edits per beat after the seed. Hard cap.
+
+# The proxy-reward axes the loop optimizes. reward = min(axes); total = sum(axes).
+REWARD_AXES = ("prompt_adherence", "style_consistency", "identity_vs_anchor",
+               "composition", "narrative_fit")
+
+
+def _reward(v: Verdict) -> int:
+    """The scalar reward: the weakest axis (a frame is only as good as its worst flaw)."""
+    return min(getattr(v, a) for a in REWARD_AXES)
+
+
+def _total(v: Verdict) -> int:
+    """Tie-breaker for best-seen selection across iterations."""
+    return sum(getattr(v, a) for a in REWARD_AXES)
+
+
+def _scores_dict(v: Verdict) -> Dict[str, int]:
+    return {a: getattr(v, a) for a in REWARD_AXES}
 
 
 def critique(candidates_b64: List[str], anchor_b64s: List[str], beat: Beat) -> Verdict:
+    """Score N candidates together; used to pick the SEED frame for the loop.
+
+    Scores are for the candidate at best_index. fix_prompt = a targeted edit
+    for that best candidate if it still falls short, else empty.
+    """
     client = get_client()
     parts = [{"type": "text", "text": (
-        f"The first {len(anchor_b64s)} image(s) are the character/style ANCHORS. The remaining "
-        f"images are candidate keyframes for this beat: {beat.action} ({beat.setting}). "
-        f"Score EACH candidate 1-5 on prompt_adherence, style_consistency (vs anchors), composition. "
-        f"Return best_index (into the candidates only, 0-based) and a fix_prompt ONLY if the best "
-        f"candidate still needs work, else empty."
+        f"The first {len(anchor_b64s)} image(s) are the character ANCHOR reference(s). The remaining "
+        f"images are candidate keyframes for this story beat.\n"
+        f"BEAT: {beat.action} — setting: {beat.setting}.\n"
+        f"Pick the best candidate (best_index, 0-based into candidates only) and score THAT one 1-5 on:\n"
+        f"- prompt_adherence: matches the described scene\n"
+        f"- style_consistency: matches the anchor art style + a flat bold comic look\n"
+        f"- identity_vs_anchor: characters look EXACTLY like their anchor (face, colors, proportions)\n"
+        f"- composition: clear, well-staged framing\n"
+        f"- narrative_fit: reads as THIS story moment (right action + emotion)\n"
+        f"Give a fix_prompt ONLY if the best candidate still needs work — a SHORT, specific edit "
+        f"instruction (e.g. 'make the mane fuller to match the anchor; brighten the lighting'), else empty."
     )}]
     for a in anchor_b64s:
         parts.append({"type": "image", "data": a, "mime_type": "image/png"})
@@ -41,22 +80,121 @@ def critique(candidates_b64: List[str], anchor_b64s: List[str], beat: Beat) -> V
     return Verdict.model_validate_json(it.output_text)
 
 
+def score_frame(frame_b64: str, anchor_b64s: List[str], beat: Beat) -> Verdict:
+    """Score a SINGLE keyframe on all reward axes (used inside the loop).
+
+    best_index is forced to 0 (one frame). fix_prompt is the targeted edit to
+    apply next if it hasn't cleared the threshold.
+    """
+    client = get_client()
+    parts = [{"type": "text", "text": (
+        f"The first {len(anchor_b64s)} image(s) are the character ANCHOR reference(s). "
+        f"The final image is a candidate keyframe for this story beat.\n"
+        f"BEAT: {beat.action} — setting: {beat.setting}.\n"
+        f"Score the candidate 1-5 on: prompt_adherence, style_consistency, "
+        f"identity_vs_anchor (looks exactly like the anchor), composition, narrative_fit "
+        f"(reads as this exact story moment). Set best_index=0.\n"
+        f"If ANY axis is below {THRESHOLD}, give a fix_prompt: ONE short, specific edit "
+        f"instruction targeting the weakest axis (e.g. 'make the mane match the anchor', "
+        f"'recenter the mouse', 'brighten to daylight'). If all axes are >= {THRESHOLD}, "
+        f"leave fix_prompt empty."
+    )}]
+    for a in anchor_b64s:
+        parts.append({"type": "image", "data": a, "mime_type": "image/png"})
+    parts.append({"type": "image", "data": frame_b64, "mime_type": "image/png"})
+    it = client.interactions.create(
+        model=MODEL_TEXT,
+        input=parts,
+        response_format={"type": "text", "mime_type": "application/json",
+                         "schema": Verdict.model_json_schema()},
+    )
+    v = Verdict.model_validate_json(it.output_text)
+    v.best_index = 0
+    return v
+
+
 def _below_threshold(v: Verdict) -> bool:
-    return min(v.prompt_adherence, v.style_consistency, v.composition) < THRESHOLD
+    return _reward(v) < THRESHOLD
+
+
+def _edit_frame(frame_b64: str, beat: Beat, anchor_b64s: List[str], fix: str) -> str:
+    """Apply ONE targeted edit to the SAME frame (iterative refinement, not regen).
+
+    We re-render the beat with the fix instruction, passing the current frame AND
+    the anchors as references so the edit nudges the existing composition toward
+    the fix rather than sampling a brand-new image from scratch.
+    """
+    prompt = (
+        f"{beat.image_prompt}. TARGETED FIX: {fix}. {style_clause()} "
+        f"Keep the overall composition of the provided keyframe; change only what the "
+        f"fix requires. Keep every character identical to the anchor reference(s)."
+    )
+    # refs: current frame first (the thing being edited), then the anchors.
+    return gen_image(prompt, refs=[frame_b64] + anchor_b64s)
+
+
+def reward_loop(beat: Beat, board: Storyboard, candidates_b64: List[str],
+                anchor_b64s: List[str], max_iters: int = MAX_ITERS
+                ) -> Tuple[str, List[dict]]:
+    """Verifier-guided keyframe search. Returns (best_frame_b64, trajectory).
+
+    trajectory[i] = {iter, scores{axis:1-5}, reward, total, fix, earned} — the
+    per-iteration record that powers the live "watch it earn the frame" demo.
+    """
+    trajectory: List[dict] = []
+
+    # --- seed: pick the best of the fan-out candidates in one multi-candidate pass
+    if len(candidates_b64) > 1:
+        seed_v = critique(candidates_b64, anchor_b64s, beat)
+        seed_idx = max(0, min(seed_v.best_index, len(candidates_b64) - 1))
+    else:
+        seed_idx = 0
+        seed_v = score_frame(candidates_b64[0], anchor_b64s, beat)
+    frame = candidates_b64[seed_idx]
+
+    best_frame, best_total = frame, _total(seed_v)
+    trajectory.append({
+        "iter": 0, "kind": "seed", "scores": _scores_dict(seed_v),
+        "reward": _reward(seed_v), "total": _total(seed_v),
+        "fix": seed_v.fix_prompt, "earned": _reward(seed_v) >= THRESHOLD,
+    })
+    print(f"  beat {beat.beat_id} iter0(seed): reward={_reward(seed_v)} "
+          f"axes={_scores_dict(seed_v)}" + (" EARNED" if _reward(seed_v) >= THRESHOLD else ""))
+
+    v = seed_v
+    for i in range(1, max_iters + 1):
+        if _reward(v) >= THRESHOLD:
+            break                                   # earned — stop early
+        if not v.fix_prompt:
+            break                                   # critic has no actionable fix
+        try:
+            frame = _edit_frame(frame, beat, anchor_b64s, v.fix_prompt)
+        except Exception as e:
+            print(f"  beat {beat.beat_id} iter{i}: edit failed ({e}); stopping")
+            break
+        v = score_frame(frame, anchor_b64s, beat)
+        if _total(v) > best_total:                  # keep best-seen (reward may plateau)
+            best_frame, best_total = frame, _total(v)
+        earned = _reward(v) >= THRESHOLD
+        trajectory.append({
+            "iter": i, "kind": "edit", "scores": _scores_dict(v),
+            "reward": _reward(v), "total": _total(v),
+            "fix": v.fix_prompt, "earned": earned,
+        })
+        print(f"  beat {beat.beat_id} iter{i}: reward={_reward(v)} axes={_scores_dict(v)}"
+              + (" EARNED" if earned else f" -> fix: {v.fix_prompt[:40]}"))
+
+    # if the final frame is the best-seen, prefer it; else return best-seen
+    if _total(v) >= best_total:
+        best_frame = frame
+    return best_frame, trajectory
 
 
 def select_best(beat: Beat, board: Storyboard, candidates_b64: List[str],
                 anchor_b64s: List[str]) -> str:
-    """Score, and if both weak do ONE regen. Returns the winning keyframe b64."""
-    v = critique(candidates_b64, anchor_b64s, beat)
-    if _below_threshold(v) and v.fix_prompt:
-        print(f"  beat {beat.beat_id}: below threshold -> 1 regen ({v.fix_prompt[:50]}...)")
-        prompt = f"{beat.image_prompt}. {v.fix_prompt}. {style_clause()} Keep characters identical to the references."
-        regen = gen_image(prompt, refs=anchor_b64s)
-        candidates_b64 = candidates_b64 + [regen]
-        v = critique(candidates_b64, anchor_b64s, beat)  # re-score; HARD STOP after this
-    idx = max(0, min(v.best_index, len(candidates_b64) - 1))
-    return candidates_b64[idx]
+    """Back-compat wrapper: run the reward loop, return just the winning frame."""
+    frame, _ = reward_loop(beat, board, candidates_b64, anchor_b64s)
+    return frame
 
 
 # ---------------------------------------------------------------------------

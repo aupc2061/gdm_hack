@@ -48,13 +48,17 @@ class Storyboard(BaseModel):
 
 
 class Verdict(BaseModel):
-    prompt_adherence: int = Field(description="1-5")
-    style_consistency: int = Field(description="1-5 vs anchor")
-    composition: int = Field(description="1-5")
+    prompt_adherence: int = Field(description="1-5: does the image match the beat's described scene?")
+    style_consistency: int = Field(description="1-5: does it match the anchor's art style + the locked look?")
+    identity_vs_anchor: int = Field(default=3, description="1-5: do the characters look exactly like their anchor references?")
+    composition: int = Field(description="1-5: is the framing/staging clear and well-composed?")
+    narrative_fit: int = Field(default=3, description="1-5: does it read as THIS story moment (right action/emotion)?")
     best_index: int = Field(description="Index of the best candidate")
-    fix_prompt: str = Field(default="", description="Targeted regen prompt if best still < threshold, else empty")
+    fix_prompt: str = Field(default="", description="Targeted edit instruction if best still below threshold, else empty")
     # NOTE: 'continuity' axis intentionally dropped — parallel fan-out has no
     # guaranteed prior selected frame to compare against at score time.
+    # identity_vs_anchor + narrative_fit added for the keyframe reward loop
+    # (GOAL.md): score on proxy rewards, iterate targeted edits to a threshold.
 
 
 # ---------------------------------------------------------------------------

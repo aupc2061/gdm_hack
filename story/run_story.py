@@ -9,13 +9,15 @@ consumes is the selected.json written by common.io.save_selected.
 from __future__ import annotations
 
 import argparse
+import json
+import os
 
 from common.io import save_selected
 from common.schema import SelectedFrame
 from story.director import direct_story
 from story.anchors import generate_anchors
 from story.keyframes import fan_out
-from story.critic import select_best, harmonize
+from story.critic import reward_loop, harmonize
 
 DEFAULT_STORY = "The Lion and the Mouse (Panchatantra): a mighty lion spares a tiny mouse; later the mouse gnaws the ropes of a hunter's net and frees the lion."
 
@@ -38,10 +40,11 @@ def run(story: str, out_dir: str, n_beats: int | None = None):
     print("[3/4] Keyframe fan-out...")
     candidates = fan_out(board, anchors)
 
-    print("[4/5] Critic + per-beat selection...")
+    print("[4/5] Critic reward loop (verifier-guided keyframe search)...")
     frames = []
     picked_beats = []          # Beat objects, parallel to frames
     picked_anchors = []        # anchor b64 lists, parallel to frames
+    reward_trace = []          # per-beat reward trajectory (the demo wow)
     for beat in board.beats:
         items = _relevant_anchor_items(beat, anchors)
         names = [n for n, _ in items]
@@ -51,7 +54,9 @@ def run(story: str, out_dir: str, n_beats: int | None = None):
             print(f"  beat {beat.beat_id}: 0 candidates survived -> skipping. "
                   f"Re-run or loosen the prompt; video/ needs all beats.")
             continue
-        best = select_best(beat, board, cands, anchor_b64s)
+        best, trajectory = reward_loop(beat, board, cands, anchor_b64s)
+        reward_trace.append({"beat_id": beat.beat_id, "action": beat.action,
+                             "iterations": trajectory})
         frames.append(SelectedFrame(
             beat_id=beat.beat_id,
             selected_keyframe_b64=best,
@@ -72,6 +77,10 @@ def run(story: str, out_dir: str, n_beats: int | None = None):
             f.selected_keyframe_b64 = h
     else:
         print("  <2 beats, nothing to harmonize")
+
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, "reward_trace.json"), "w") as f:
+        json.dump(reward_trace, f, indent=2)
 
     path = save_selected(frames, out_dir)
     print(f"\nDONE -> {path}  ({len(frames)} beats). Hand this dir to video/.")
