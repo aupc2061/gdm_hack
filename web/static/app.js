@@ -181,7 +181,7 @@ function finishDirect() {
 function animateLive(run) {
   currentRun = run;
   const note = document.querySelector("#act2 .act-note");
-  note.innerHTML = 'Animating your story through Omni Flash — one shot at a time. <em>(live, ~40s per beat)</em>';
+  note.innerHTML = 'Animating your story through Omni Flash — all shots at once, in parallel. <em>(live, ~60s for the whole film)</em>';
   let bar = $("animate-progress");
   if (!bar) {
     bar = document.createElement("div");

@@ -36,7 +36,7 @@ from story.keyframes import fan_out
 from story.critic import reward_loop, harmonize
 from story.run_story import _relevant_anchor_items
 from video.redirect import RedirectSession
-from video.synth import synth_beat, VideoBlocked
+from video.synth import synth_beat, synth_all, VideoBlocked
 from video.stitch import build_native, build_final
 from video.narrate import narrate
 
@@ -176,30 +176,38 @@ def _animate_events(run: str, q: "queue.Queue"):
         by_id = {fr.beat_id: fr for fr in frames}
         n = len(frames)
         q.put(("animate_start", {"beats": n}))
-        beat_clips = []
-        for i, fr in enumerate(sorted(frames, key=lambda f: f.beat_id)):
-            q.put(("animate_beat", {"beat_id": fr.beat_id, "index": i + 1, "total": n,
-                                    "status": "running",
-                                    "label": f"Animating beat {i + 1}/{n} through Omni Flash…"}))
-            try:
-                bc = synth_beat(fr, run_dir)
-                # Narration: TTS the beat's line, mixed OVER Omni's ducked ambient bed.
-                try:
-                    wav = os.path.join(run_dir, f"beat{fr.beat_id}.wav")
-                    narrate(fr.narration, wav)
-                    bc.wav_path = wav
-                except Exception as ne:
-                    print(f"  narration failed beat {fr.beat_id}: {ne}", flush=True)
-                beat_clips.append(bc)
-                url = "/media/" + os.path.relpath(bc.mp4_path, OUT).replace(os.sep, "/")
-                q.put(("animate_beat", {"beat_id": fr.beat_id, "index": i + 1, "total": n,
-                                        "status": "done", "clip": url}))
-            except VideoBlocked as e:
-                q.put(("animate_beat", {"beat_id": fr.beat_id, "index": i + 1, "total": n,
-                                        "status": "blocked", "message": str(e)[:120]}))
+        for fr in sorted(frames, key=lambda f: f.beat_id):
+            q.put(("animate_beat", {"beat_id": fr.beat_id, "index": fr.beat_id + 1,
+                                    "total": n, "status": "running",
+                                    "label": f"Animating all {n} shots through Omni Flash, simultaneously…"}))
+
+        # All beats' Omni calls fire CONCURRENTLY (no rate limits) — ~one beat's
+        # time instead of N. synth_all skips guardrail-blocked beats.
+        beat_clips = synth_all(frames, run_dir, parallel=True)
+        got = {bc.beat_id for bc in beat_clips}
+        for fr in frames:
+            done = fr.beat_id in got
+            data = {"beat_id": fr.beat_id, "index": fr.beat_id + 1, "total": n,
+                    "status": "done" if done else "blocked"}
+            if done:
+                bc = next(b for b in beat_clips if b.beat_id == fr.beat_id)
+                data["clip"] = "/media/" + os.path.relpath(bc.mp4_path, OUT).replace(os.sep, "/")
+            q.put(("animate_beat", data))
+
         if not beat_clips:
             q.put(("error", {"message": "all beats blocked by guardrails"}))
             return
+
+        # Narration per surviving beat (TTS over ducked Omni bed).
+        q.put(("stage", {"stage": "narrate", "status": "running", "label": "Voicing the narration…"}))
+        for bc in beat_clips:
+            try:
+                wav = os.path.join(run_dir, f"beat{bc.beat_id}.wav")
+                narrate(by_id[bc.beat_id].narration, wav)
+                bc.wav_path = wav
+            except Exception as ne:
+                print(f"  narration failed beat {bc.beat_id}: {ne}", flush=True)
+
         q.put(("stage", {"stage": "stitch", "status": "running",
                          "label": "Stitching the film + narration…"}))
         # narrate=True + keep_native=True => TTS narration over ducked Omni bed.
