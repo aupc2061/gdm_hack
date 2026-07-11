@@ -28,7 +28,7 @@ from fastapi.responses import (StreamingResponse, JSONResponse, FileResponse,
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from common.io import save_selected, load_selected
+from common.io import save_selected, load_selected, png_to_b64
 from common.schema import SelectedFrame
 from story.director import direct_story
 from story.anchors import generate_anchors
@@ -47,6 +47,9 @@ OUT = os.path.join(ROOT, "out")
 # Pre-baked demo run the frontend points at (Act 2 + Act 3 base).
 DEMO_RUN_DIR = os.environ.get("CK_RUN_DIR", os.path.join(OUT, "crow_video"))
 DEMO_STORY_DIR = os.environ.get("CK_STORY_DIR", os.path.join(OUT, "crow_story"))
+# CK_DEMO_CACHE=1 -> the crow story replays pre-baked artifacts instantly (Act 1
+# storyboard, Act 2 film, Act 3 edit) for smooth recording. Other stories run live.
+DEMO_CACHE = os.environ.get("CK_DEMO_CACHE", "").lower() in ("1", "true", "yes")
 
 app = FastAPI(title="ChitraKatha")
 
@@ -70,10 +73,65 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
+def _is_crow_story(story: str) -> bool:
+    return "crow" in (story or "").lower()
+
+
+def _replay_cached_story(out_dir: str, q: "queue.Queue"):
+    """Demo cache: replay the pre-baked crow storyboard/anchors/keyframes/reward
+    trajectory as SSE — streamed with small delays so it reads as live — instead
+    of the ~93s real pipeline. Copies selected.json + PNGs into out_dir so Act 2's
+    cache finds them. Only used for the crow demo story; others run live."""
+    import shutil, time as _t
+    sd = DEMO_STORY_DIR
+    manifest = json.load(open(os.path.join(sd, "selected.json")))
+    trace = json.load(open(os.path.join(sd, "reward_trace.json"))) if os.path.exists(os.path.join(sd, "reward_trace.json")) else []
+    trace_by_id = {t["beat_id"]: t for t in trace}
+
+    q.put(("stage", {"stage": "director", "status": "running", "label": "Director agent reading your story..."}))
+    _t.sleep(0.6)
+    q.put(("director", {"beats": [{"beat_id": m["beat_id"], "action": trace_by_id.get(m["beat_id"], {}).get("action", ""),
+                                   "setting": "", "narration": m.get("narration", "")} for m in manifest],
+                        "characters": m0_names(manifest)}))
+    q.put(("stage", {"stage": "anchors", "status": "running", "label": "Generating character anchors (the consistency key)..."}))
+    # anchors: one strip, from the first beat's anchor pngs
+    for i, ap in enumerate(manifest[0].get("anchor_pngs", [])):
+        _t.sleep(0.3)
+        q.put(("anchor", {"name": (manifest[0].get("anchor_names") or [f"ref{i}"])[i] if i < len(manifest[0].get("anchor_names", [])) else f"ref{i}",
+                          "image": _b64_data_uri(png_to_b64(os.path.join(sd, ap)))}))
+    q.put(("stage", {"stage": "keyframes", "status": "running", "label": "Keyframe agents fanning out per beat..."}))
+    _t.sleep(0.4)
+    q.put(("stage", {"stage": "critic", "status": "running", "label": "Verifier-guided reward loop — earning each keyframe..."}))
+    for m in manifest:
+        _t.sleep(0.7)
+        q.put(("beat_winner", {"beat_id": m["beat_id"],
+                               "action": trace_by_id.get(m["beat_id"], {}).get("action", ""),
+                               "image": _b64_data_uri(png_to_b64(os.path.join(sd, m["keyframe_png"]))),
+                               "trajectory": trace_by_id.get(m["beat_id"], {}).get("iterations", [])}))
+    q.put(("stage", {"stage": "harmonize", "status": "running", "label": "Global coherence pass — matching the whole set..."}))
+    _t.sleep(0.6)
+    # copy the whole story dir into out_dir so Act 2 cache + video have the seam
+    os.makedirs(out_dir, exist_ok=True)
+    for fn in os.listdir(sd):
+        shutil.copy(os.path.join(sd, fn), os.path.join(out_dir, fn))
+    q.put(("done", {"beats": len(manifest), "run": os.path.basename(out_dir), "cached": True}))
+
+
+def m0_names(manifest):
+    return manifest[0].get("anchor_names", []) if manifest else []
+
+
 def _story_pipeline_events(story: str, out_dir: str, q: "queue.Queue"):
     """Runs the live story pipeline in a worker thread, pushing SSE dicts to q.
     Sentinel None signals completion."""
     try:
+        # DEMO CACHE: crow story -> replay pre-baked storyboard instantly (streamed
+        # to look live). Any other story runs the real ~93s pipeline below.
+        if DEMO_CACHE and _is_crow_story(story) and os.path.exists(os.path.join(DEMO_STORY_DIR, "selected.json")):
+            print("  [demo-cache] crow story -> replaying pre-baked storyboard", flush=True)
+            _replay_cached_story(out_dir, q)
+            return
+
         q.put(("stage", {"stage": "director", "status": "running",
                          "label": "Director agent reading your story..."}))
         board = direct_story(story)
@@ -334,9 +392,6 @@ class RedirectReq(BaseModel):
     prompt: Optional[str] = None    # for edit
     old: Optional[str] = None       # for swap
     new: Optional[str] = None       # for swap
-
-
-DEMO_CACHE = os.environ.get("CK_DEMO_CACHE", "").lower() in ("1", "true", "yes")
 
 
 def _cached_redirect(run_dir: str, beat_id: int) -> Optional[dict]:
