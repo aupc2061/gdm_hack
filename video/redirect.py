@@ -31,6 +31,13 @@ from common.schema import BeatClip
 from video.stitch import build_native
 from video.synth import extract_thoughts, _THINK_CONFIG
 
+# Pin the art style on every edit/swap. Without this, Omni re-renders the changed
+# element in a drifted style (observed: cute googly-eye / 3D-Pixar look creeping
+# back on a crow->parrot swap). Keeps re-directions in the locked ACK comic look.
+_STYLE_LOCK = ("Keep the exact same flat 2D Amar Chitra Katha comic art style — "
+               "bold black ink outlines, flat colors — NOT 3D, NOT Pixar, NOT "
+               "photorealistic, no cartoon googly eyes.")
+
 # Scripted fallback: a pre-tested edit sequence for the demo. Each entry chains
 # on the previous edit of the SAME beat (multi-turn), across beats too.
 DEMO_SCRIPT: List[Tuple[int, str]] = [
@@ -101,6 +108,11 @@ class RedirectSession:
             raise KeyError(f"no such beat {beat_id}; have {self.beat_ids}")
         st = self.beats[beat_id]
 
+        # Pin the art style so edits don't drift into 3D/googly-eye (unless the
+        # caller already embedded a style lock, e.g. swap_element / consistency fix).
+        if "art style" not in prompt.lower():
+            prompt = f"{prompt} {_STYLE_LOCK}"
+
         print(f"  [beat {beat_id}] edit #{st['edits'] + 1} (chaining on {st['cur_id'][:24]}...)")
         it = self._omni_edit(st["cur_id"], prompt, think=think)
 
@@ -146,8 +158,9 @@ class RedirectSession:
         Returns the list of new clip paths.
         """
         targets = beats if beats is not None else self.beat_ids
-        prompt = (f"Replace the {old} with a {new}. Keep the {new} consistent with "
-                  f"the same pose, position, and action the {old} had. "
+        prompt = (f"Replace the {old} with a {new}. Keep the {new} in the same pose, "
+                  f"position, and action the {old} had. "
+                  f"{_STYLE_LOCK} "
                   f"Keep everything else in the scene exactly the same.")
         print(f"SWAP: {old} -> {new} across beats {targets}")
         clips = []
