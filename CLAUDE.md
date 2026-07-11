@@ -4,6 +4,9 @@ ChitraKatha: narrate a folk tale → agents storyboard it → NB2 keyframes →
 Omni Flash animates a narrated multi-shot short → conversational re-direction.
 GDM Bangalore Hackathon, **Idea 4**. Team of 2, each with their own Claude.
 
+**North star:** `GOAL.md` — READ FIRST. The one-line goal, the 3 novelty claims,
+and what we must NOT become (a generic cookbook clone). If a change doesn't serve
+the goal, question it. The novelty centerpiece is the **keyframe reward loop**.
 **Full spec:** `ps_final.md` (authoritative — supersedes `ps_modified.md`/`ps_orig.md`).
 **API cheat-sheet:** `api_ref.md` (call shapes, corrected & verified 2026-07-10).
 

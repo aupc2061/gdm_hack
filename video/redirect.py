@@ -1,15 +1,19 @@
 """Conversational re-direction — the Idea-4 money shot.
 
-Owner: Person 2. Stateful edit of a previously generated (store=True) Omni clip
-via previous_interaction_id. Re-synthesizes ONLY that segment.
+Owner: Person 2. Multi-turn stateful editing of generated Omni clips via
+previous_interaction_id. Each edit CHAINS on the beat's latest version, so you
+can hold a real conversation ("make it night" -> "now add rain" -> "zoom in").
+After every edit the full 3-shot short is re-stitched with that beat swapped in,
+so the audience sees the change both in isolation and in context.
 
-VERIFIED 2026-07-10 (out/probe): works. The prior call must have used store=True
-(synth.py does). Free-tier interactions expire in ~1 day, so re-direct in the
-same session you generated.
+VERIFIED 2026-07-10 (out/probe): previous_interaction_id editing works; the new
+edit returns its OWN interaction id, which is itself editable (chainable).
+Requires the prior call used store=True (synth.py does). Free-tier interactions
+expire in ~1 day, so re-direct in the same session you generated.
 
-DEMO PLAN: scripted live on a SHORT single-beat clip. Keep the edit prompt
-surgical, ending with "Keep everything else the same." Have a screen recording
-of a known-good run as fallback.
+Two ways to drive it:
+  - Interactive REPL:   python -m video.redirect --run out/stage3
+  - Scripted fallback:  python -m video.redirect --run out/stage3 --script
 """
 
 from __future__ import annotations
@@ -18,56 +22,205 @@ import argparse
 import base64
 import json
 import os
+from typing import List, Tuple
+
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 
 from common.client import get_client, MODEL_VIDEO
+from common.schema import BeatClip
+from video.stitch import build_native
+
+# Scripted fallback: a pre-tested edit sequence for the demo. Each entry chains
+# on the previous edit of the SAME beat (multi-turn), across beats too.
+DEMO_SCRIPT: List[Tuple[int, str]] = [
+    (0, "Make it night time with soft moonlight. Keep everything else the same."),
+    (0, "Add gentle fireflies drifting in the air. Keep everything else the same."),
+    (1, "Make it rain lightly. Keep everything else the same."),
+]
 
 
-def redirect(prev_interaction_id: str, edit_prompt: str,
-             out_path: str = "out/redirect.mp4") -> str:
-    """Apply a conversational edit to a prior Omni clip. Returns out_path."""
-    client = get_client()
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    it = client.interactions.create(
-        model=MODEL_VIDEO,
-        previous_interaction_id=prev_interaction_id,
-        input=edit_prompt,
-    )
-    data = it.output_video.data
-    if isinstance(data, str):
-        data = base64.b64decode(data)
-    with open(out_path, "wb") as f:
-        f.write(data)
-    print(f"redirect -> {out_path} (new interaction {it.id})")
-    return out_path
+def _extract_video_bytes(interaction) -> bytes:
+    data = interaction.output_video.data
+    return base64.b64decode(data) if isinstance(data, str) else data
 
 
-def redirect_beat(interactions_json: str, beat_id: int, edit_prompt: str,
-                  out_path: str | None = None) -> str:
-    """Look up a beat's stored Omni interaction id and re-direct it.
+class RedirectSession:
+    """Holds per-beat editing state for one generated run.
 
-    interactions_json is the file run_video.py writes ({"0": "<id>", ...}).
+    For each beat we track its CURRENT interaction id (starts at the original,
+    advances with every edit) and its CURRENT clip path. Re-stitching always
+    uses whatever the current clip of each beat is.
     """
-    with open(interactions_json) as f:
-        ids = json.load(f)
-    iid = ids.get(str(beat_id))
-    if not iid:
-        raise KeyError(f"no interaction id for beat {beat_id} in {interactions_json}")
-    if out_path is None:
-        out_path = os.path.join(os.path.dirname(interactions_json), f"beat{beat_id}_redirect.mp4")
-    return redirect(iid, edit_prompt, out_path)
+
+    def __init__(self, run_dir: str):
+        self.run_dir = run_dir
+        ids_path = os.path.join(run_dir, "interactions.json")
+        if not os.path.exists(ids_path):
+            raise FileNotFoundError(f"{ids_path} not found — run video.run_video first")
+        with open(ids_path) as f:
+            original_ids = json.load(f)
+
+        # beat_id -> current state. Original clip is beat<N>.mp4 (from synth).
+        self.beats = {}
+        for bid_str, iid in original_ids.items():
+            bid = int(bid_str)
+            self.beats[bid] = {
+                "cur_id": iid,
+                "orig_id": iid,
+                "cur_clip": os.path.join(run_dir, f"beat{bid}.mp4"),
+                "orig_clip": os.path.join(run_dir, f"beat{bid}.mp4"),
+                "edits": 0,
+            }
+        self.stitch_version = 0
+        self.history: List[dict] = []
+        self._client = get_client()
+
+    @property
+    def beat_ids(self) -> List[int]:
+        return sorted(self.beats)
+
+    @retry(stop=stop_after_attempt(3), wait=wait_fixed(3),
+           retry=retry_if_exception_type(Exception), reraise=True)
+    def _omni_edit(self, prev_id: str, prompt: str):
+        return self._client.interactions.create(
+            model=MODEL_VIDEO,
+            previous_interaction_id=prev_id,
+            input=prompt,
+        )
+
+    def edit(self, beat_id: int, prompt: str, restitch: bool = True) -> str:
+        """Apply one conversational edit to a beat, chaining on its latest version.
+
+        Returns the path to the new edited clip. Re-stitches the full short by
+        default so the edit is visible in context.
+        """
+        if beat_id not in self.beats:
+            raise KeyError(f"no such beat {beat_id}; have {self.beat_ids}")
+        st = self.beats[beat_id]
+
+        print(f"  [beat {beat_id}] edit #{st['edits'] + 1} (chaining on {st['cur_id'][:24]}...)")
+        it = self._omni_edit(st["cur_id"], prompt)
+
+        st["edits"] += 1
+        new_clip = os.path.join(self.run_dir, f"beat{beat_id}_v{st['edits']}.mp4")
+        with open(new_clip, "wb") as f:
+            f.write(_extract_video_bytes(it))
+
+        # advance the beat's current pointers so the NEXT edit chains on THIS one
+        st["cur_id"] = it.id
+        st["cur_clip"] = new_clip
+        self.history.append({"beat": beat_id, "prompt": prompt,
+                             "new_id": it.id, "clip": new_clip})
+        print(f"    -> {new_clip}  (new interaction {it.id[:24]}...)")
+
+        if restitch:
+            short = self.restitch()
+            print(f"    -> re-stitched short: {short}")
+        return new_clip
+
+    def restitch(self) -> str:
+        """Concatenate the CURRENT clip of every beat into a fresh short."""
+        self.stitch_version += 1
+        clips = [BeatClip(beat_id=b, mp4_path=self.beats[b]["cur_clip"])
+                 for b in self.beat_ids]
+        out = os.path.join(self.run_dir, f"chitrakatha_v{self.stitch_version}.mp4")
+        return build_native(clips, out)
+
+    def reset(self, beat_id: int | None = None) -> None:
+        """Revert a beat (or all beats) to its originally-generated clip/id."""
+        targets = [beat_id] if beat_id is not None else self.beat_ids
+        for b in targets:
+            st = self.beats[b]
+            st["cur_id"], st["cur_clip"], st["edits"] = st["orig_id"], st["orig_clip"], 0
+        print(f"  reset {'beat ' + str(beat_id) if beat_id is not None else 'all beats'}")
+
+    def show(self) -> None:
+        print(f"  run: {self.run_dir}")
+        for b in self.beat_ids:
+            st = self.beats[b]
+            tag = f"{st['edits']} edit(s)" if st["edits"] else "original"
+            print(f"    beat {b}: {os.path.basename(st['cur_clip'])}  [{tag}]")
+
+
+# ---------------------------------------------------------------------------
+# Scripted fallback
+# ---------------------------------------------------------------------------
+
+def run_script(session: RedirectSession, script: List[Tuple[int, str]] = DEMO_SCRIPT) -> None:
+    print(f"Running scripted re-direction ({len(script)} edits)...")
+    for beat_id, prompt in script:
+        session.edit(beat_id, prompt)
+    print("\nScripted sequence complete.")
+    session.show()
+
+
+# ---------------------------------------------------------------------------
+# Interactive REPL
+# ---------------------------------------------------------------------------
+
+_HELP = """commands:
+  edit <beat> <instruction>   apply an edit to a beat (chains on its latest version)
+  show                        list current state of each beat
+  reset [beat]                revert a beat (or all) to the original
+  script                      run the pre-baked DEMO_SCRIPT
+  help                        this message
+  quit / q                    exit
+"""
+
+
+def repl(session: RedirectSession) -> None:
+    print("ChitraKatha re-direction session. Type 'help' for commands.\n")
+    session.show()
+    while True:
+        try:
+            line = input("\nredirect> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nbye")
+            break
+        if not line:
+            continue
+        cmd, *rest = line.split(maxsplit=1)
+        arg = rest[0] if rest else ""
+        try:
+            if cmd in ("quit", "q", "exit"):
+                break
+            elif cmd == "help":
+                print(_HELP)
+            elif cmd == "show":
+                session.show()
+            elif cmd == "script":
+                run_script(session)
+            elif cmd == "reset":
+                session.reset(int(arg) if arg.strip() else None)
+            elif cmd == "edit":
+                b, *p = arg.split(maxsplit=1)
+                if not p:
+                    print("  usage: edit <beat> <instruction>")
+                    continue
+                session.edit(int(b), p[0])
+            else:
+                print(f"  unknown command '{cmd}' — type 'help'")
+        except Exception as e:
+            # Never crash the live demo on a bad edit / expired interaction.
+            print(f"  !! {type(e).__name__}: {str(e)[:160]}")
+            print("     (interaction may have expired, or Omni rejected the edit — try again)")
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="Conversationally re-direct one beat.")
-    ap.add_argument("--interactions", help="path to interactions.json from run_video")
-    ap.add_argument("--beat", type=int, help="beat_id to edit (with --interactions)")
-    ap.add_argument("--id", help="raw interaction id (alternative to --interactions/--beat)")
-    ap.add_argument("--prompt", default="Make it night time. Keep everything else the same.")
-    ap.add_argument("--out", default=None)
+    ap = argparse.ArgumentParser(description="Multi-turn conversational re-direction.")
+    ap.add_argument("--run", default="out/stage3",
+                    help="run dir containing interactions.json + beat<N>.mp4")
+    ap.add_argument("--script", action="store_true",
+                    help="run the pre-baked DEMO_SCRIPT instead of the interactive REPL")
+    # single-shot convenience (backward compatible)
+    ap.add_argument("--beat", type=int, help="one-shot: edit this beat then exit")
+    ap.add_argument("--prompt", help="one-shot: the edit instruction")
     args = ap.parse_args()
-    if args.interactions and args.beat is not None:
-        redirect_beat(args.interactions, args.beat, args.prompt, args.out)
-    elif args.id:
-        redirect(args.id, args.prompt, args.out or "out/redirect.mp4")
+
+    session = RedirectSession(args.run)
+    if args.beat is not None and args.prompt:
+        session.edit(args.beat, args.prompt)
+    elif args.script:
+        run_script(session)
     else:
-        ap.error("provide either --interactions + --beat, or --id")
+        repl(session)
