@@ -6,6 +6,7 @@ env/
 
 # generated media / runs (keep the repo light; regenerate from code)
 out/
+inspect/
 *.mp4
 *.wav
 

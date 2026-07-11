@@ -16,24 +16,55 @@ from common.schema import Storyboard
 
 STYLE_LOCKED = "Amar Chitra Katha Indian comic-book illustration style, bold ink outlines, flat saturated colors"
 
+# The Director chooses the beat count within this range. Bounded (not unlimited)
+# because each beat = one slow Omni video call downstream (~60-90s); an unbounded
+# count would make synthesis time and the final video length unpredictable.
+MIN_BEATS = 3
+MAX_BEATS = 6
 
-def _prompt(story: str, n_beats: int, style: str, language: str) -> str:
+
+def _beats_instruction(n_beats: int | None) -> str:
+    if n_beats is not None:
+        return f"Turn this folk tale into a {n_beats}-beat animated storyboard."
     return (
-        f"You are an animation director. Turn this folk tale into a {n_beats}-beat animated "
-        f"storyboard. Story: {story}\n"
-        f"Global visual style (apply to ALL beats): {style}.\n"
-        f"Narration language: {language}.\n"
-        f"Keep every character visually identical across beats. For each beat provide subject, "
-        f"action, setting, camera, an explicit `motion` line for animation, a `duration_s` pacing "
-        f"hint (2-6s by narrative weight), a one-sentence `narration` line written to fit that "
-        f"duration (~2.5 words/sec), and a full `image_prompt` for the keyframe. "
-        f"Also list every character/prop that needs a reference anchor with a `sheet_prompt`."
+        f"Break this folk tale into a sequence of animated storyboard beats. "
+        f"YOU decide how many beats the story needs — between {MIN_BEATS} and {MAX_BEATS} — "
+        f"based on its narrative complexity. A simple tale with a single turning point needs "
+        f"about {MIN_BEATS}; a richer tale with several distinct events or locations needs more. "
+        f"Use only as many beats as the story genuinely requires; do not pad a simple story or "
+        f"over-compress a complex one."
     )
 
 
-def direct_story(story: str, n_beats: int = 3, style: str = STYLE_LOCKED,
+def _prompt(story: str, n_beats: int | None, style: str, language: str) -> str:
+    return (
+        f"You are an animation director. {_beats_instruction(n_beats)} Story: {story}\n"
+        f"Global visual style (apply to ALL beats): {style}.\n"
+        f"Narration language: {language}.\n"
+        f"Keep every character visually identical across beats. Number beats sequentially "
+        f"starting at 0. For each beat provide subject, action, setting, camera, an explicit "
+        f"`motion` line for animation, a `duration_s` pacing hint (2-6s by narrative weight), a "
+        f"one-sentence `narration` line written to fit that duration (~2.5 words/sec), and a full "
+        f"`image_prompt` for the keyframe. Also list every character/prop that needs a reference "
+        f"anchor with a `sheet_prompt`."
+    )
+
+
+def _normalize_beats(board: Storyboard) -> Storyboard:
+    """Renumber beat_id sequentially 0..n-1 so downstream keying is reliable
+    regardless of how the model numbered them."""
+    for i, b in enumerate(board.beats):
+        b.beat_id = i
+    return board
+
+
+def direct_story(story: str, n_beats: int | None = None, style: str = STYLE_LOCKED,
                  language: str = "English") -> Storyboard:
-    """PRIMARY path — structured output via response_format. VERIFY AT T+0."""
+    """PRIMARY path — structured output via response_format. VERIFY AT T+0.
+
+    n_beats=None (default) lets the Director choose the beat count from the story
+    (bounded MIN_BEATS..MAX_BEATS). Pass an int to force an exact count.
+    """
     client = get_client()
     it = client.interactions.create(
         model=MODEL_TEXT,
@@ -44,10 +75,10 @@ def direct_story(story: str, n_beats: int = 3, style: str = STYLE_LOCKED,
             "schema": Storyboard.model_json_schema(),
         },
     )
-    return Storyboard.model_validate_json(it.output_text)
+    return _normalize_beats(Storyboard.model_validate_json(it.output_text))
 
 
-def direct_story_fallback(story: str, n_beats: int = 3, style: str = STYLE_LOCKED,
+def direct_story_fallback(story: str, n_beats: int | None = None, style: str = STYLE_LOCKED,
                           language: str = "English") -> Storyboard:
     """FALLBACK — old generate_content config form (cookbook-proven).
 
@@ -62,7 +93,7 @@ def direct_story_fallback(story: str, n_beats: int = 3, style: str = STYLE_LOCKE
             "response_schema": Storyboard,
         },
     )
-    return Storyboard.model_validate_json(resp.text)
+    return _normalize_beats(Storyboard.model_validate_json(resp.text))
 
 
 if __name__ == "__main__":
