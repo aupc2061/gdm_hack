@@ -252,14 +252,23 @@ def harmonize(beats: List[Beat], winners_b64: List[str],
             print("  global consistency: set is coherent, no fix needed")
             break
         beat = beats[idx]
-        print(f"  global consistency: beat {beat.beat_id} is the outlier ({reason}) -> regen to match")
+        print(f"  global consistency: beat {beat.beat_id} is the outlier ({reason}) -> edit to match")
+        # A coherent SIBLING frame (any non-outlier) is the visual target for the
+        # shared look — without it the model only has a text `reason` and tends to
+        # drift the same way again. We pass: the outlier (preserve its composition)
+        # + a sibling (copy its palette/setting) + the character anchors (identity).
+        sibling = next((w for j, w in enumerate(winners) if j != idx), None)
         prompt = (
             f"{beat.image_prompt}. {style_clause()} "
-            f"Match the shared look of the other frames in this sequence; "
-            f"specifically fix: {reason}. Keep characters identical to the references."
+            f"The SECOND reference image shows the shared look this sequence must match "
+            f"(its palette, lighting, and setting). Re-render THIS beat to match that look; "
+            f"specifically fix: {reason}. Keep the outlier frame's composition and keep every "
+            f"character identical to the anchor reference(s)."
         )
+        # refs order: outlier frame (composition), sibling (target look), then anchors.
+        refs = [winners[idx]] + ([sibling] if sibling else []) + anchors_per_beat[idx]
         try:
-            winners[idx] = gen_image(prompt, refs=anchors_per_beat[idx])
+            winners[idx] = gen_image(prompt, refs=refs)
         except Exception as e:
             print(f"  global consistency: regen failed ({e}); keeping original")
             break
