@@ -146,20 +146,35 @@ def synth_beat(fr: SelectedFrame, out_dir: str, think: bool = False,
     return BeatClip(beat_id=fr.beat_id, mp4_path=mp4, omni_interaction_id=it.id)
 
 
-def synth_all(frames: List[SelectedFrame], out_dir: str, think: bool = False) -> List[BeatClip]:
-    """Sequential (avoid Omni rate limits). Returns BeatClips in beat order.
+def synth_all(frames: List[SelectedFrame], out_dir: str, think: bool = False,
+              parallel: bool = True) -> List[BeatClip]:
+    """Synthesize all beats. Returns BeatClips in beat order.
+
+    parallel=True (default): all beats' Omni image_to_video calls run CONCURRENTLY
+    via a thread pool — ~4 beats in ~one beat's time (verified no rate limits on
+    this API). parallel=False falls back to sequential (nicer per-beat progress
+    for a "watch it build" demo).
 
     A beat blocked by guardrails after retries is SKIPPED (logged), not fatal —
-    one bad beat must not sink the whole render. Mirrors story/keyframes.py.
-    Returns only the beats that succeeded (may be fewer than len(frames)).
+    one bad beat must not sink the whole render. Returns only the beats that
+    succeeded (may be fewer than len(frames)), always in beat order.
     """
-    clips = []
-    for fr in sorted(frames, key=lambda f: f.beat_id):
+    ordered = sorted(frames, key=lambda f: f.beat_id)
+
+    def _one(fr):
         try:
-            clips.append(synth_beat(fr, out_dir, think=think))
+            return synth_beat(fr, out_dir, think=think)
         except VideoBlocked as e:
-            print(f"  !! {e} -> SKIPPING beat {fr.beat_id} (stitch will omit it)")
-    return clips
+            print(f"  !! {e} -> SKIPPING beat {fr.beat_id} (stitch will omit it)", flush=True)
+            return None
+
+    if not parallel or len(ordered) <= 1:
+        return [c for c in (_one(fr) for fr in ordered) if c]
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=len(ordered)) as ex:
+        results = list(ex.map(_one, ordered))   # ex.map preserves input order
+    return [c for c in results if c]
 
 
 # ---------------------------------------------------------------------------
