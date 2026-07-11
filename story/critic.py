@@ -33,6 +33,29 @@ REWARD_AXES = ("prompt_adherence", "style_consistency", "identity_vs_anchor",
                "composition", "narrative_fit")
 
 
+# Anchored rubric — WITHOUT this, the LLM judge rubber-stamps everything 5/5
+# (observed: it scored a two-crow, broken-perspective, wrong-eye frame as perfect).
+# Each axis defines what a 5 vs 3 vs 1 concretely means, and the framing forces the
+# judge to hunt for flaws first. Reserve 5 for flawless; most decent frames are 3-4.
+_RUBRIC = (
+    "Be a STRICT art director, not a cheerleader. Most frames have at least one flaw — "
+    "find it. Reserve 5 for genuinely flawless; a single visible defect caps the "
+    "relevant axis at 2. Score each axis 1-5 using these anchors:\n"
+    "- prompt_adherence: 5=every element of the scene present & correct; 3=main idea right "
+    "but details off; 1=wrong scene.\n"
+    "- style_consistency: 5=identical flat bold ACK comic look & palette as the anchor; "
+    "3=recognizable but drifts (softer/cuter/different linework); 1=different rendering style.\n"
+    "- identity_vs_anchor: 5=EXACT same character (same eye style, face, colors, proportions); "
+    "3=same species but a detail differs (eye shape, muzzle, color); 1=looks like a different character.\n"
+    "- composition: 5=clean, well-staged, correct scale & count of subjects; "
+    "3=readable but a scale/framing issue; 1=duplicated subjects, wrong scale, or messy layout.\n"
+    "- narrative_fit: 5=unmistakably THIS story moment (right action+emotion); 3=plausible but generic; "
+    "1=wrong moment.\n"
+    "Check specifically for: duplicated characters, wrong subject count, out-of-scale objects, "
+    "eye/face style changing between frames — these are common and must score LOW on the relevant axis."
+)
+
+
 def _reward(v: Verdict) -> int:
     """The scalar reward: the weakest axis (a frame is only as good as its worst flaw)."""
     return min(getattr(v, a) for a in REWARD_AXES)
@@ -57,15 +80,12 @@ def critique(candidates_b64: List[str], anchor_b64s: List[str], beat: Beat) -> V
     parts = [{"type": "text", "text": (
         f"The first {len(anchor_b64s)} image(s) are the character ANCHOR reference(s). The remaining "
         f"images are candidate keyframes for this story beat.\n"
-        f"BEAT: {beat.action} — setting: {beat.setting}.\n"
-        f"Pick the best candidate (best_index, 0-based into candidates only) and score THAT one 1-5 on:\n"
-        f"- prompt_adherence: matches the described scene\n"
-        f"- style_consistency: matches the anchor art style + a flat bold comic look\n"
-        f"- identity_vs_anchor: characters look EXACTLY like their anchor (face, colors, proportions)\n"
-        f"- composition: clear, well-staged framing\n"
-        f"- narrative_fit: reads as THIS story moment (right action + emotion)\n"
+        f"BEAT: {beat.action} — setting: {beat.setting}.\n\n"
+        f"{_RUBRIC}\n\n"
+        f"Pick the best candidate (best_index, 0-based into candidates only) and score THAT one.\n"
         f"Give a fix_prompt ONLY if the best candidate still needs work — a SHORT, specific edit "
-        f"instruction (e.g. 'make the mane fuller to match the anchor; brighten the lighting'), else empty."
+        f"instruction targeting its weakest axis (e.g. 'fix the crow's eye to a solid black eye like the "
+        f"anchor'), else empty."
     )}]
     for a in anchor_b64s:
         parts.append({"type": "image", "data": a, "mime_type": "image/png"})
@@ -90,13 +110,12 @@ def score_frame(frame_b64: str, anchor_b64s: List[str], beat: Beat) -> Verdict:
     parts = [{"type": "text", "text": (
         f"The first {len(anchor_b64s)} image(s) are the character ANCHOR reference(s). "
         f"The final image is a candidate keyframe for this story beat.\n"
-        f"BEAT: {beat.action} — setting: {beat.setting}.\n"
-        f"Score the candidate 1-5 on: prompt_adherence, style_consistency, "
-        f"identity_vs_anchor (looks exactly like the anchor), composition, narrative_fit "
-        f"(reads as this exact story moment). Set best_index=0.\n"
+        f"BEAT: {beat.action} — setting: {beat.setting}.\n\n"
+        f"{_RUBRIC}\n\n"
+        f"Set best_index=0 (single frame).\n"
         f"If ANY axis is below {THRESHOLD}, give a fix_prompt: ONE short, specific edit "
-        f"instruction targeting the weakest axis (e.g. 'make the mane match the anchor', "
-        f"'recenter the mouse', 'brighten to daylight'). If all axes are >= {THRESHOLD}, "
+        f"instruction targeting the weakest axis (e.g. 'fix the crow's eye to solid black like the anchor', "
+        f"'remove the duplicate crow', 'shrink the pot to realistic scale'). If all axes are >= {THRESHOLD}, "
         f"leave fix_prompt empty."
     )}]
     for a in anchor_b64s:
