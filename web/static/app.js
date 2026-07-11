@@ -169,20 +169,80 @@ function renderTrajectory(card, traj) {
 function finishDirect() {
   setStage("harmonize", "done");
   $("direct-btn").disabled = false;
-  // reveal Act 2 + Act 3 using the pre-baked demo run
-  loadRun("demo");
   $("act2").hidden = false;
   $("act3").hidden = false;
   $("act2").scrollIntoView({ behavior: "smooth" });
+  // Act 2 now ANIMATES the just-narrated story live (matches what was typed),
+  // instead of loading the pre-baked crow. ~40s/beat with progress.
+  animateLive("live_run");
 }
 
-// ---- Act 2: load pre-baked run ----
-function loadRun(run) {
+// ---- Act 2: live video synthesis for the narrated story ----
+function animateLive(run) {
   currentRun = run;
-  fetch("/api/run/" + run).then((r) => r.json()).then((d) => {
-    if (d.error) return;
-    if (d.video) { $("film").src = d.video; }
-  });
+  const note = document.querySelector("#act2 .act-note");
+  note.innerHTML = 'Animating your story through Omni Flash — one shot at a time. <em>(live, ~40s per beat)</em>';
+  let bar = $("animate-progress");
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "animate-progress"; bar.className = "stage-tracker";
+    $("act2").querySelector(".film-frame").before(bar);
+  }
+  bar.innerHTML = ""; bar.hidden = false;
+
+  fetch("/api/animate", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ run }),
+  }).then((resp) => {
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    function pump() {
+      return reader.read().then(({ done, value }) => {
+        if (done) return;
+        buf += dec.decode(value, { stream: true });
+        const chunks = buf.split("\n\n"); buf = chunks.pop();
+        for (const ch of chunks) handleAnimateSSE(ch, bar);
+        return pump();
+      });
+    }
+    return pump();
+  }).catch((e) => { note.innerHTML = "⚠ animation error: " + e; });
+}
+
+function handleAnimateSSE(chunk, bar) {
+  const ev = /event: (.+)/.exec(chunk);
+  const dm = /data: (.+)/s.exec(chunk);
+  if (!ev || !dm) return;
+  const type = ev[1].trim();
+  let d; try { d = JSON.parse(dm[1]); } catch { return; }
+
+  if (type === "animate_start") {
+    for (let i = 0; i < d.beats; i++) {
+      const p = document.createElement("div");
+      p.className = "stage-pill"; p.id = "abeat-" + i;
+      p.innerHTML = `<span class="dot"></span>Shot ${i + 1}`;
+      bar.appendChild(p);
+    }
+  } else if (type === "animate_beat") {
+    const p = $("abeat-" + (d.index - 1));
+    if (p) {
+      p.classList.remove("running", "done");
+      if (d.status === "running") p.classList.add("running");
+      else if (d.status === "done") p.classList.add("done");
+      else if (d.status === "blocked") { p.classList.add("done"); p.style.background = "#7a2e1e"; p.style.color = "#fff"; }
+    }
+  } else if (type === "stage" && d.stage === "stitch") {
+    document.querySelector("#act2 .act-note").innerHTML = "Stitching the film… <em>(almost there)</em>";
+  } else if (type === "animate_done") {
+    bar.hidden = true;
+    document.querySelector("#act2 .act-note").innerHTML =
+      "Your story, animated end-to-end — storyboard-conditioned, generated live.";
+    $("film").src = d.video; $("film").load();
+    $("act3").scrollIntoView({ behavior: "smooth" });
+  } else if (type === "error") {
+    document.querySelector("#act2 .act-note").innerHTML = "⚠ " + d.message;
+  }
 }
 
 // ---- Act 3: redirect ----
