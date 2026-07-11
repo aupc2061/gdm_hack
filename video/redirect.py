@@ -29,6 +29,7 @@ from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_t
 from common.client import get_client, MODEL_VIDEO
 from common.schema import BeatClip
 from video.stitch import build_native
+from video.synth import extract_thoughts, _THINK_CONFIG
 
 # Scripted fallback: a pre-tested edit sequence for the demo. Each entry chains
 # on the previous edit of the SAME beat (multi-turn), across beats too.
@@ -81,36 +82,44 @@ class RedirectSession:
 
     @retry(stop=stop_after_attempt(3), wait=wait_fixed(3),
            retry=retry_if_exception_type(Exception), reraise=True)
-    def _omni_edit(self, prev_id: str, prompt: str):
-        return self._client.interactions.create(
-            model=MODEL_VIDEO,
-            previous_interaction_id=prev_id,
-            input=prompt,
-        )
+    def _omni_edit(self, prev_id: str, prompt: str, think: bool = False):
+        kwargs = {"model": MODEL_VIDEO, "previous_interaction_id": prev_id, "input": prompt}
+        if think:
+            kwargs["generation_config"] = dict(_THINK_CONFIG)
+        return self._client.interactions.create(**kwargs)
 
-    def edit(self, beat_id: int, prompt: str, restitch: bool = True) -> str:
+    def edit(self, beat_id: int, prompt: str, restitch: bool = True,
+             think: bool = False) -> str:
         """Apply one conversational edit to a beat, chaining on its latest version.
 
         Returns the path to the new edited clip. Re-stitches the full short by
-        default so the edit is visible in context.
+        default so the edit is visible in context. think=True surfaces Omni's
+        physics/lighting reasoning (slower ~1.8x) and prints + saves it — a
+        strong demo moment showing the model reason about the edit.
         """
         if beat_id not in self.beats:
             raise KeyError(f"no such beat {beat_id}; have {self.beat_ids}")
         st = self.beats[beat_id]
 
         print(f"  [beat {beat_id}] edit #{st['edits'] + 1} (chaining on {st['cur_id'][:24]}...)")
-        it = self._omni_edit(st["cur_id"], prompt)
+        it = self._omni_edit(st["cur_id"], prompt, think=think)
 
         st["edits"] += 1
         new_clip = os.path.join(self.run_dir, f"beat{beat_id}_v{st['edits']}.mp4")
         with open(new_clip, "wb") as f:
             f.write(_extract_video_bytes(it))
 
+        thought = extract_thoughts(it) if think else ""
+        if thought:
+            with open(new_clip.replace(".mp4", ".thought.txt"), "w") as f:
+                f.write(thought)
+            print(f"    reasoning: {thought[:200]}{'...' if len(thought) > 200 else ''}")
+
         # advance the beat's current pointers so the NEXT edit chains on THIS one
         st["cur_id"] = it.id
         st["cur_clip"] = new_clip
         self.history.append({"beat": beat_id, "prompt": prompt,
-                             "new_id": it.id, "clip": new_clip})
+                             "new_id": it.id, "clip": new_clip, "thought": thought})
         print(f"    -> {new_clip}  (new interaction {it.id[:24]}...)")
 
         if restitch:
@@ -160,6 +169,7 @@ def run_script(session: RedirectSession, script: List[Tuple[int, str]] = DEMO_SC
 
 _HELP = """commands:
   edit <beat> <instruction>   apply an edit to a beat (chains on its latest version)
+  editx <beat> <instruction>  same, but show Omni's physics/lighting REASONING (slower)
   show                        list current state of each beat
   reset [beat]                revert a beat (or all) to the original
   script                      run the pre-baked DEMO_SCRIPT
@@ -192,12 +202,12 @@ def repl(session: RedirectSession) -> None:
                 run_script(session)
             elif cmd == "reset":
                 session.reset(int(arg) if arg.strip() else None)
-            elif cmd == "edit":
+            elif cmd in ("edit", "editx"):
                 b, *p = arg.split(maxsplit=1)
                 if not p:
-                    print("  usage: edit <beat> <instruction>")
+                    print(f"  usage: {cmd} <beat> <instruction>")
                     continue
-                session.edit(int(b), p[0])
+                session.edit(int(b), p[0], think=(cmd == "editx"))
             else:
                 print(f"  unknown command '{cmd}' — type 'help'")
         except Exception as e:
@@ -215,11 +225,13 @@ if __name__ == "__main__":
     # single-shot convenience (backward compatible)
     ap.add_argument("--beat", type=int, help="one-shot: edit this beat then exit")
     ap.add_argument("--prompt", help="one-shot: the edit instruction")
+    ap.add_argument("--think", action="store_true",
+                    help="surface Omni's physics/lighting reasoning (slower ~1.8x)")
     args = ap.parse_args()
 
     session = RedirectSession(args.run)
     if args.beat is not None and args.prompt:
-        session.edit(args.beat, args.prompt)
+        session.edit(args.beat, args.prompt, think=args.think)
     elif args.script:
         run_script(session)
     else:

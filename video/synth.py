@@ -43,6 +43,27 @@ def _save_video(interaction, path: str) -> None:
         f.write(data)
 
 
+def extract_thoughts(interaction) -> str:
+    """Pull the model's reasoning summary from an interaction's 'thought' steps.
+
+    Verified: with thinking_level=high + thinking_summaries='auto', Omni returns
+    a 'thought' step whose .summary describes the physics/lighting reasoning
+    before rendering. Returns '' if thinking was off / none surfaced.
+    """
+    out = []
+    for step in getattr(interaction, "steps", None) or []:
+        if getattr(step, "type", None) == "thought" and getattr(step, "summary", None):
+            items = step.summary if isinstance(step.summary, list) else [step.summary]
+            for x in items:
+                out.append(getattr(x, "text", str(x)))
+    return "\n".join(out).strip()
+
+
+# thinking is a PRE-BAKE enhancer: it surfaces demoable physics reasoning but
+# ~1.8x latency (verified 64.5s vs 36s). Off by default; on for baked demo clips.
+_THINK_CONFIG = {"thinking_level": "high", "thinking_summaries": "auto"}
+
+
 def _motion_prompt(fr: SelectedFrame) -> str:
     """Build the text prompt. Anchors are described in words (they can't be
     passed as extra images), then the framing rule is appended."""
@@ -52,10 +73,19 @@ def _motion_prompt(fr: SelectedFrame) -> str:
     return f"{who}{fr.motion_text}. {SHOT_RULES}"
 
 
-def synth_beat(fr: SelectedFrame, out_dir: str) -> BeatClip:
-    """Generate one beat's video from its keyframe. store=True. Returns BeatClip."""
+def synth_beat(fr: SelectedFrame, out_dir: str, think: bool = False) -> BeatClip:
+    """Generate one beat's video from its keyframe. store=True. Returns BeatClip.
+
+    think=True enables Omni's physics/lighting reasoning (thinking_level=high),
+    captures the thought text to beat<N>.thought.txt. Slower (~1.8x) — use for
+    pre-baked demo clips, not live generation.
+    """
     client = get_client()
     os.makedirs(out_dir, exist_ok=True)
+
+    gen_cfg = {"video_config": {"task": "image_to_video"}}
+    if think:
+        gen_cfg.update(_THINK_CONFIG)
 
     it = client.interactions.create(
         model=MODEL_VIDEO,
@@ -63,19 +93,28 @@ def synth_beat(fr: SelectedFrame, out_dir: str) -> BeatClip:
             {"type": "image", "data": fr.selected_keyframe_b64, "mime_type": "image/png"},
             {"type": "text", "text": _motion_prompt(fr)},
         ],
-        generation_config={"video_config": {"task": "image_to_video"}},
+        generation_config=gen_cfg,
         store=True,  # REQUIRED for re-direction
         response_format={"type": "video", "aspect_ratio": "16:9"},
     )
     mp4 = os.path.join(out_dir, f"beat{fr.beat_id}.mp4")
     _save_video(it, mp4)
+
+    if think:
+        thought = extract_thoughts(it)
+        if thought:
+            with open(os.path.join(out_dir, f"beat{fr.beat_id}.thought.txt"), "w") as f:
+                f.write(thought)
+            print(f"  beat {fr.beat_id}: thought captured ({len(thought)} chars)")
+
     print(f"  beat {fr.beat_id}: {mp4}  (interaction {it.id})")
     return BeatClip(beat_id=fr.beat_id, mp4_path=mp4, omni_interaction_id=it.id)
 
 
-def synth_all(frames: List[SelectedFrame], out_dir: str) -> List[BeatClip]:
+def synth_all(frames: List[SelectedFrame], out_dir: str, think: bool = False) -> List[BeatClip]:
     """Sequential (avoid Omni rate limits). Returns BeatClips in beat order."""
-    return [synth_beat(fr, out_dir) for fr in sorted(frames, key=lambda f: f.beat_id)]
+    return [synth_beat(fr, out_dir, think=think)
+            for fr in sorted(frames, key=lambda f: f.beat_id)]
 
 
 # ---------------------------------------------------------------------------

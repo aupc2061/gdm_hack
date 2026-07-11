@@ -26,12 +26,13 @@ from video.stitch import build_final
 
 
 def run(selected_json: str, out_dir: str = "out/video",
-        do_narrate: bool = False, mix: bool = False):
+        do_narrate: bool = False, mix: bool = False, think: bool = False):
     os.makedirs(out_dir, exist_ok=True)
     frames = load_selected(selected_json)
 
-    print(f"[1/3] Synth {len(frames)} beats (Omni image_to_video, store=True)...")
-    beat_clips = synth_all(frames, out_dir)
+    tag = " + thinking" if think else ""
+    print(f"[1/3] Synth {len(frames)} beats (Omni image_to_video, store=True{tag})...")
+    beat_clips = synth_all(frames, out_dir, think=think)
 
     if do_narrate:
         print("[2/3] Narrate (TTS)...")
@@ -66,5 +67,7 @@ if __name__ == "__main__":
     ap.add_argument("--out", default="out/video")
     ap.add_argument("--narrate", action="store_true", help="add TTS narration (fallback path)")
     ap.add_argument("--mix", action="store_true", help="with --narrate, layer TTS over Omni audio")
+    ap.add_argument("--think", action="store_true",
+                    help="pre-bake with Omni reasoning captured per beat (slower ~1.8x)")
     args = ap.parse_args()
-    run(args.selected, args.out, do_narrate=args.narrate, mix=args.mix)
+    run(args.selected, args.out, do_narrate=args.narrate, mix=args.mix, think=args.think)
