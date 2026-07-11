@@ -39,9 +39,19 @@ MAX_ROUNDS = 2  # bounded correction loop; hard stop after this.
 # can be layered in later. Images (anchors) are referenced by path.
 # ---------------------------------------------------------------------------
 
+class Feature(BaseModel):
+    """One typed, checkable IDENTITY attribute (Option A: structured, not free-text).
+
+    Identity only — color/shape/markings that must stay constant. NOT pose,
+    expression, or lighting (those legitimately vary per beat and caused false
+    flags in the free-text version, e.g. 'furrowed-brow expression')."""
+    feature: str = Field(description="attribute name, e.g. 'eye', 'beak', 'body color'")
+    value: str = Field(description="the required concrete value, e.g. 'solid black beady eye'")
+
+
 class CharacterPrimitive(BaseModel):
     name: str
-    must_have: str = Field(description="concrete, checkable visual attributes")
+    features: List[Feature] = Field(description="3-5 distinctive identity features")
 
 
 class Primitives(BaseModel):
@@ -86,16 +96,23 @@ def sample_frames(mp4_path: str, n: int = FRAMES_PER_BEAT) -> List[str]:
 
 
 def check_frame(frame_png: str, prim: Primitives) -> FrameVerdict:
-    """Attribute-level check of ONE frame against the primitive contract."""
+    """Per-FIELD check of ONE frame against the typed primitive contract.
+
+    Checks the art style + each character's identity features. Explicitly ignores
+    pose/expression/lighting (they vary legitimately) and only flags a feature when
+    it CLEARLY differs — avoids the free-text version's over-triggering."""
     client = get_client()
     spec = prim.model_dump_json(indent=2)
     parts = [
         {"type": "text", "text": (
-            "Check this video frame against the required primitives below. For EACH "
-            "character, verify its `must_have` attributes are present exactly as "
-            "described. Be strict and literal about attributes (tail shape, color, "
-            "mane). Report per-attribute satisfied/not with what you actually saw.\n\n"
-            f"PRIMITIVES:\n{spec}")},
+            "Check this frame against the required contract below.\n"
+            "- Verify the `style` matches (flat bold comic look — NOT 3D/Pixar/photoreal).\n"
+            "- For each character, verify each identity `feature` value is present.\n"
+            "RULES: judge IDENTITY only — ignore pose, expression, camera angle, and "
+            "lighting (those vary per scene). Flag a feature as NOT satisfied ONLY if it "
+            "CLEARLY differs from the required value. When in doubt, mark it satisfied.\n"
+            "Report one check per feature (attribute = the feature name), plus one for style.\n\n"
+            f"CONTRACT:\n{spec}")},
         {"type": "image", "data": _b64(frame_png), "mime_type": "image/png"},
     ]
     it = client.interactions.create(
@@ -117,60 +134,130 @@ def check_beat(mp4_path: str, prim: Primitives) -> List[AttrCheck]:
     return list(violations.values())
 
 
+# ---------------------------------------------------------------------------
+# Anchor-derived, per-beat primitives (fixes the two integration gaps):
+#   (1) hand-written specs cause false mismatches -> DERIVE from the anchor image.
+#   (2) global primitives false-flag beats where a character is absent -> scope
+#       each beat's primitives to the characters actually present in that beat
+#       (SelectedFrame.anchor_names carries this).
+# ---------------------------------------------------------------------------
+
+class _DerivedFeatures(BaseModel):
+    features: List[Feature]
+
+
+def _derive_features(anchor_b64: str, name: str) -> List[Feature]:
+    """Typed derivation (Option A): turn an anchor image into 3-5 structured
+    IDENTITY features. Structured (not a free-text sentence) so nothing is
+    dropped and each field is independently checkable + fixable.
+
+    Explicitly excludes pose/expression/lighting — the free-text version captured
+    'furrowed-brow expression' as identity and then false-flagged every frame."""
+    client = get_client()
+    parts = [
+        {"type": "text", "text": (
+            f"This is the character reference for '{name}'. Extract its 3-5 MOST distinctive, "
+            f"permanent IDENTITY features — the ones that must stay identical in every scene. "
+            f"Each feature = a short name + its concrete value (e.g. feature='eye', "
+            f"value='small solid-black beady eye'; feature='beak', value='medium grey-black beak'). "
+            f"Include ONLY stable identity (color, markings, body shape, eye/beak/mane shape). "
+            f"EXCLUDE pose, expression, mood, camera angle, background, and lighting.")},
+        {"type": "image", "data": anchor_b64, "mime_type": "image/png"},
+    ]
+    it = client.interactions.create(
+        model=MODEL_TEXT, input=parts,
+        response_format={"type": "text", "mime_type": "application/json",
+                         "schema": _DerivedFeatures.model_json_schema()})
+    return _DerivedFeatures.model_validate_json(it.output_text).features
+
+
+def derive_beat_primitives(frames, style: str) -> dict:
+    """Build {beat_id: Primitives} scoped to the characters PRESENT in each beat,
+    with typed identity features DERIVED from each anchor image (deduped per name)."""
+    derived: dict = {}  # name -> List[Feature] (derive each anchor once)
+    beat_prims = {}
+    for fr in frames:
+        chars = []
+        for name, b64 in zip(fr.anchor_names, fr.anchor_b64s):
+            if name not in derived:
+                derived[name] = _derive_features(b64, name)
+                feats = ", ".join(f"{f.feature}={f.value}" for f in derived[name])
+                print(f"  derived primitive: {name} -> {feats}", flush=True)
+            chars.append(CharacterPrimitive(name=name, features=derived[name]))
+        beat_prims[fr.beat_id] = Primitives(style=style, characters=chars)
+    return beat_prims
+
+
 def _fix_prompt(violations: List[AttrCheck]) -> str:
-    """Turn violated attributes into a surgical re-direction instruction."""
-    fixes = "; ".join(f"the {v.attribute} should be correct ({v.note})"
-                      for v in violations)
-    return (f"Fix these consistency issues: {fixes}. Match the required design "
-            f"exactly. Keep everything else the same.")
+    """Turn violated features into a surgical re-direction instruction.
+
+    Includes an explicit STYLE-LOCK: the free-text version's fixes drifted the
+    art into 3D/Pixar. We pin the flat comic look so a fix can't regress style."""
+    fixes = "; ".join(f"{v.attribute}: {v.note}" for v in violations)
+    return (
+        f"Fix only these specific details: {fixes}. "
+        f"Keep the SAME flat 2D Amar Chitra Katha comic art style — bold ink outlines, "
+        f"flat colors, NOT 3D, NOT Pixar, NOT photorealistic. "
+        f"Change nothing else — keep the composition, background, and all other elements the same."
+    )
 
 
-def enforce(session: RedirectSession, prim: Primitives,
+def enforce(session: RedirectSession, beat_prims: dict,
             max_rounds: int = MAX_ROUNDS) -> dict:
-    """Check every beat's rendered clip against the primitives; auto re-direct
-    violators; re-check; loop up to max_rounds. Bounded hard stop.
+    """Check every beat's rendered clip against ITS per-beat primitives; auto
+    re-direct violators; re-check; loop up to max_rounds. Bounded hard stop.
 
+    beat_prims: {beat_id: Primitives} — per-beat scoped (see derive_beat_primitives),
+    so a beat is only checked against characters actually present in it.
     Returns a report {beat_id: {"rounds": n, "resolved": bool, "final": [attrs]}}.
     """
     report = {}
     for beat_id in session.beat_ids:
+        prim = beat_prims.get(beat_id)
+        if prim is None or not prim.characters:
+            report[beat_id] = {"rounds": 0, "resolved": True, "final": []}
+            continue
         rounds = 0
-        while rounds < max_rounds:
-            clip = session.beats[beat_id]["cur_clip"]
-            violations = check_beat(clip, prim)
-            if not violations:
-                print(f"  beat {beat_id}: consistent ✓")
-                break
+        violations = check_beat(session.beats[beat_id]["cur_clip"], prim)
+        while violations and rounds < max_rounds:
             attrs = [v.attribute for v in violations]
-            print(f"  beat {beat_id}: violations {attrs} -> re-directing (round {rounds + 1})")
+            print(f"  beat {beat_id}: violations {attrs} -> re-directing (round {rounds + 1})", flush=True)
             session.edit(beat_id, _fix_prompt(violations), restitch=False)
             rounds += 1
-        else:
             violations = check_beat(session.beats[beat_id]["cur_clip"], prim)
+        if not violations:
+            print(f"  beat {beat_id}: consistent ✓ ({rounds} fix round(s))", flush=True)
+        else:
+            print(f"  beat {beat_id}: still off after {rounds} rounds: {[v.attribute for v in violations]}", flush=True)
         report[beat_id] = {"rounds": rounds, "resolved": not violations,
                            "final": [v.attribute for v in violations]}
     short = session.restitch()
-    print(f"\nEnforced short -> {short}")
+    print(f"\nEnforced short -> {short}", flush=True)
     return report
+
+
+def enforce_run(run_dir: str, selected_json: str, style: str = "Amar Chitra Katha comic, bold ink outlines, flat colors",
+                max_rounds: int = MAX_ROUNDS) -> dict:
+    """Pipeline entry: derive per-beat primitives from the story's anchors, then
+    enforce them on an already-rendered run_dir (has interactions.json + beatN.mp4).
+
+    This is the post-render consistency net wired into run_video.
+    """
+    from common.io import load_selected
+    frames = load_selected(selected_json)
+    print("[enforce] deriving per-beat primitives from anchors...")
+    beat_prims = derive_beat_primitives(frames, style)
+    session = RedirectSession(run_dir)
+    print("[enforce] checking rendered beats against primitives...")
+    return enforce(session, beat_prims, max_rounds=max_rounds)
 
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser(description="Enforce JSON consistency primitives across a run.")
-    ap.add_argument("--run", default="out/stage3")
-    ap.add_argument("--primitives", help="path to a primitives JSON file")
+    ap = argparse.ArgumentParser(description="Enforce anchor-derived consistency primitives on a rendered run.")
+    ap.add_argument("--run", default="out/crow_video", help="rendered run dir (interactions.json + beatN.mp4)")
+    ap.add_argument("--selected", default="out/crow_story/selected.json", help="the story's selected.json (for anchors)")
+    ap.add_argument("--max-rounds", type=int, default=MAX_ROUNDS)
     args = ap.parse_args()
-
-    if args.primitives:
-        prim = Primitives.model_validate_json(open(args.primitives).read())
-    else:
-        # demo default — in the real pipeline this is DERIVED from the anchor
-        prim = Primitives(
-            style="Amar Chitra Katha comic, bold ink outlines, flat colors",
-            characters=[
-                CharacterPrimitive(name="lion", must_have="large golden mane, tan body"),
-                CharacterPrimitive(name="small animal", must_have="a small mouse with a thin hairless tail (NOT a bushy squirrel tail)"),
-            ])
-    session = RedirectSession(args.run)
-    rep = enforce(session, prim)
+    rep = enforce_run(args.run, args.selected, max_rounds=args.max_rounds)
     print(json.dumps(rep, indent=2))
