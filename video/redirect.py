@@ -135,6 +135,29 @@ class RedirectSession:
         out = os.path.join(self.run_dir, f"chitrakatha_v{self.stitch_version}.mp4")
         return build_native(clips, out)
 
+    def swap_element(self, old: str, new: str, beats: List[int] | None = None,
+                     think: bool = False) -> List[str]:
+        """Timeline-wide conversational element swap: replace `old` with `new`
+        across every affected beat, keeping everything else consistent, then
+        re-stitch ONCE. This is the bar's "element swapping ... consistent
+        multi-shot timeline" in one conversational operation.
+
+        beats=None → apply to all beats (each edit chains on that beat's latest).
+        Returns the list of new clip paths.
+        """
+        targets = beats if beats is not None else self.beat_ids
+        prompt = (f"Replace the {old} with a {new}. Keep the {new} consistent with "
+                  f"the same pose, position, and action the {old} had. "
+                  f"Keep everything else in the scene exactly the same.")
+        print(f"SWAP: {old} -> {new} across beats {targets}")
+        clips = []
+        for b in targets:
+            # restitch only after the last beat, so we stitch once
+            clips.append(self.edit(b, prompt, restitch=False, think=think))
+        short = self.restitch()
+        print(f"  -> re-stitched short with {new}: {short}")
+        return clips
+
     def reset(self, beat_id: int | None = None) -> None:
         """Revert a beat (or all beats) to its originally-generated clip/id."""
         targets = [beat_id] if beat_id is not None else self.beat_ids
@@ -170,6 +193,7 @@ def run_script(session: RedirectSession, script: List[Tuple[int, str]] = DEMO_SC
 _HELP = """commands:
   edit <beat> <instruction>   apply an edit to a beat (chains on its latest version)
   editx <beat> <instruction>  same, but show Omni's physics/lighting REASONING (slower)
+  swap <old> <new>            replace <old> with <new> across ALL beats, re-stitch once
   show                        list current state of each beat
   reset [beat]                revert a beat (or all) to the original
   script                      run the pre-baked DEMO_SCRIPT
@@ -208,6 +232,12 @@ def repl(session: RedirectSession) -> None:
                     print(f"  usage: {cmd} <beat> <instruction>")
                     continue
                 session.edit(int(b), p[0], think=(cmd == "editx"))
+            elif cmd == "swap":
+                parts = arg.split()
+                if len(parts) != 2:
+                    print("  usage: swap <old> <new>   (e.g. swap mouse squirrel)")
+                    continue
+                session.swap_element(parts[0], parts[1])
             else:
                 print(f"  unknown command '{cmd}' — type 'help'")
         except Exception as e:
@@ -225,12 +255,16 @@ if __name__ == "__main__":
     # single-shot convenience (backward compatible)
     ap.add_argument("--beat", type=int, help="one-shot: edit this beat then exit")
     ap.add_argument("--prompt", help="one-shot: the edit instruction")
+    ap.add_argument("--swap", nargs=2, metavar=("OLD", "NEW"),
+                    help="one-shot: swap OLD element for NEW across all beats")
     ap.add_argument("--think", action="store_true",
                     help="surface Omni's physics/lighting reasoning (slower ~1.8x)")
     args = ap.parse_args()
 
     session = RedirectSession(args.run)
-    if args.beat is not None and args.prompt:
+    if args.swap:
+        session.swap_element(args.swap[0], args.swap[1], think=args.think)
+    elif args.beat is not None and args.prompt:
         session.edit(args.beat, args.prompt, think=args.think)
     elif args.script:
         run_script(session)
